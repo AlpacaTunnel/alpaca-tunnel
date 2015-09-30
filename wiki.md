@@ -1,13 +1,19 @@
 WIKI
 ====
 
+HOWTO
+-----
+to do
+
+
 FAQ
 ---
 
-1.Q: why iptables don't work?
+#### 1. why iptables don't work?
+
   A: restart pptp/l2tp tunnel. change iptables rules before vpn client connect to server.
      and try these two rules at the same time:
-     iptables -t nat -A POSTROUTING -s 10.5.5.0/24 -o eth0 -j MASQUERADE
+     iptables -t nat -A POSTROUTING -s 10.5.5.0/24 -o eth0 -j MASQUERADE;
      iptables -t nat -A POSTROUTING -s 10.5.5.0/24 -o eth0 -j SNAT --to-source 10.0.2.15
 
 

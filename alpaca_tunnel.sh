@@ -1,6 +1,18 @@
 #!/bin/bash
 export PATH="/bin:/sbin:/usr/sbin:/usr/bin:/usr/local/bin"
 
+
+DNS_ADDR_LOCAL=114.114.114.114
+EXE_NAME=AlpacaTunnel
+TUN_PREFIX=alptun
+TUN_MASK=16
+TUN_MTU=1408
+TCPMSS=1356
+HEADER_LEN=60  #20+8+32
+BACKUP_GW_IP=/tmp/alpaca_tunnel_gw_ip
+LOGFILE=/var/log/alpaca_tunnel.log
+
+
 CUR_DIR=$(cd `dirname $0` && pwd -P)
 
 EXE_PATH=$CUR_DIR
@@ -18,33 +30,16 @@ else
     echo "configure file not available!"
     exit 1
 fi
-#KEY_MD5=`echo $SELF_KEY | md5sum | awk '{ printf $1 }'`
-KEY_MD5=$SELF_KEY
 
-#TUN_INDEX: each tun interface indicates one tunnel instance.
-#Change it when you want to run multiple tunnel instances at the same time.
-TUN_INDEX=1
-
-NETID=17
+KEY_MD5=`echo $SELF_KEY | md5sum | awk '{ printf $1 }'`
 TUN_IP=10.$NETID.$SELF_ID
 TUN_GW=10.$NETID.0.1
-
-DNS_ADDR_LOCAL=114.114.114.114
-EXE_NAME=AlpacaTunnel
-TUN_PREFIX=alptun
 TUNIF=$TUN_PREFIX$TUN_INDEX
-TUN_MASK=16
-TUN_MTU=1408
-TCPMSS=1356
-
-HEADER_LEN=60       #20+8+32
 BACKUP_PREFIX=running_backup_
 BACKUP_PATH=/tmp/running_backup_$TUNIF
 mkdir -p $BACKUP_PATH
 BACKUP_SCRIPT=$BACKUP_PATH/alpaca_tunnel.sh
 BACKUP_CONF=$BACKUP_PATH/alpaca_tunnel.conf
-BACKUP_GW_IP=/tmp/alpaca_tunnel_gw_ip
-LOGFILE=/var/log/alpaca_tunnel.log
 
 
 usage()
@@ -210,6 +205,10 @@ serverup()
 
     #should check all tables
     default_gw_dev=`ip route show | grep '^default' | sed -e 's/.*dev \([^ ]*\).*/\1/'`
+    if [ x$default_gw_dev == x ]; then
+        echo "default route lost, nothing to do!"
+        return 1
+    fi
     gwmtu=`ifconfig $default_gw_dev | grep MTU | sed -e 's/.*MTU:\([^ ]*\).*/\1/'`
     gwmtu=$((gwmtu-HEADER_LEN))
     TUN_MTU=$((gwmtu<TUN_MTU?gwmtu:TUN_MTU))

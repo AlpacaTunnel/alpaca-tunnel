@@ -51,7 +51,7 @@ typedef enum { false, true } bool;
 */
 struct tunnel_header
 {
-    uint16_t id;
+    uint16_t id;  //sender's ID
     uint16_t m_type_len;
     uint32_t time;
     uint32_t seq_frag_off;
@@ -77,6 +77,7 @@ struct tunnel_header
 #define OFFSET_IPV4_DADDR 16
 #define OFFSET_IPV4_FRAGOFF 0x1FFF  //in host byte order
 #define INTER_SWITCH_NET 0x7FFF0000  //127.255.0.0 in host byte order
+#define BETWEEN_TUN_NET 0x7F000000  //127.0.0.0 in host byte order
 
 #define WRITE_BUF_SIZE 50000000
 #define SEND_BUF_SIZE 50000000
@@ -85,6 +86,14 @@ struct tunnel_header
 #define MAX_SERVER_ID 4095  //15.255
 #define MAX_ID 65535
 //reserved ID: 0.0, 0.1, 255.255, any server/client cann't use.
+
+struct ip_dot_decimal   //in network byte order
+{
+    byte a;
+    byte b;
+    byte c;
+    byte d;
+} __attribute__((packed));
 
 struct packet_profile
 {
@@ -128,6 +137,8 @@ struct peer_profile* init_peer(FILE *secrets_file);
 int free_peer(struct peer_profile *pp);
 void sig_handler(int signum);
 uint16_t do_csum(uint16_t old_sum, uint32_t old_ip, uint32_t new_ip);
+int ip_dnat(byte* ip_load, uint32_t new_ip);
+int ip_snat(byte* ip_load, uint32_t new_ip);
 int16_t inet_ptons(char *a);   //convert 15.255 to 4095
 int shrink_line(char *line);
 
@@ -139,6 +150,7 @@ static uint16_t global_self_id = 0;
 struct if_info global_tunif;
 uint16_t global_offset_ipv4_fragoff;
 uint32_t global_inter_switch_net;
+uint32_t global_between_tun_net;
 int global_packet_cnt_write = 0;
 int global_packet_cnt_send = 0;
 
@@ -199,6 +211,7 @@ int main(int argc, char *argv[])
     collect_if_info(&global_if_list);
     global_offset_ipv4_fragoff = htons(OFFSET_IPV4_FRAGOFF);
     global_inter_switch_net = htonl(INTER_SWITCH_NET);
+    global_between_tun_net = htonl(BETWEEN_TUN_NET);
 
     int rc1=0, rc2=0, rc5=0, rc6=0;
     //uint16_t clid = 0;
@@ -284,6 +297,11 @@ int main(int argc, char *argv[])
     global_tunif.mask = get_ipmask(global_tunif.addr);
     if(TUN_NETMASK != ntohl(global_tunif.mask))
         printf("warning: tunnel mask is not /16\n");
+    if((uint16_t)(ntohl(global_tunif.addr)) != global_self_id)
+    {
+        printf("tunnel ip does not match ID!\n");
+        goto _END;
+    }
 
     bzero(&servaddr, sizeof(servaddr));
     servaddr.sin_family = AF_INET;
@@ -531,8 +549,8 @@ struct peer_profile* init_peer(FILE *secrets_file)
             perror("malloc failed!");
             return NULL;
         }
-        pp[i].vip = (global_tunif.addr & global_tunif.mask) | (htons(i) << 16); //in network byte order.
-        pp[i].inter_vip = (global_inter_switch_net & global_tunif.mask) | (htons(i) << 16); //in network byte order.
+        pp[i].vip = (global_tunif.addr & global_tunif.mask) | htonl(i); //in network byte order.
+        pp[i].inter_vip = (global_inter_switch_net & global_tunif.mask) | htonl(i); //in network byte order.
         pp[i].rip = 0;
         bzero(pp[i].peeraddr, sizeof(struct sockaddr_in));
         bzero(pp[i].psk, 2*AES_TEXT_LEN);
@@ -678,6 +696,64 @@ uint16_t do_csum(uint16_t old_sum, uint32_t old_ip, uint32_t new_ip)
     return new_sum;
 }
 
+int ip_dnat(byte* ip_load, uint32_t new_ip)
+{
+    uint16_t csum = 0;
+    struct iphdr ip_h;
+    memcpy(&ip_h, ip_load, IPV4_HEAD_LEN);
+    if(ip_h.daddr == new_ip)
+        return 0;
+    memcpy(&ip_load[OFFSET_IPV4_DADDR], &new_ip, 4);
+    csum = do_csum(ip_h.check, ip_h.daddr, new_ip);
+    memcpy(&ip_load[OFFSET_IPV4_CSUM], &csum, 2);     //recalculated ip checksum
+    //if packet is fragmented, can only recaculate the first fragment.
+    //Because the following packets don't have a layer 4 header!
+    if(6 == ip_h.protocol && (global_offset_ipv4_fragoff & ip_h.frag_off) == 0 )    //tcp
+    {
+        int csum_off = 4*ip_h.ihl + 16;
+        memcpy(&csum, ip_load+csum_off, 2);
+        csum = do_csum(csum, ip_h.daddr, new_ip);
+        memcpy(ip_load+csum_off, &csum, 2);    //recalculated tcp checksum
+    }
+    else if(17 == ip_h.protocol && (global_offset_ipv4_fragoff & ip_h.frag_off) == 0 )  //udp
+    {
+        int csum_off = 4*ip_h.ihl + 6;
+        memcpy(&csum, ip_load+csum_off, 2);
+        csum = do_csum(csum, ip_h.daddr, new_ip);
+        memcpy(ip_load+csum_off, &csum, 2);    //recalculated udp checksum
+    }
+    return 0;
+}
+
+int ip_snat(byte* ip_load, uint32_t new_ip)
+{
+    uint16_t csum = 0;
+    struct iphdr ip_h;
+    memcpy(&ip_h, ip_load, IPV4_HEAD_LEN);
+    if(ip_h.saddr == new_ip)
+        return 0;
+    memcpy(&ip_load[OFFSET_IPV4_SADDR], &new_ip, 4);
+    csum = do_csum(ip_h.check, ip_h.saddr, new_ip);
+    memcpy(&ip_load[OFFSET_IPV4_CSUM], &csum, 2);     //recalculated ip checksum
+    //if packet is fragmented, can only recaculate the first fragment.
+    //Because the following packets don't have a layer 4 header!
+    if(6 == ip_h.protocol && (global_offset_ipv4_fragoff & ip_h.frag_off) == 0 )    //tcp
+    {
+        int csum_off = 4*ip_h.ihl + 16;
+        memcpy(&csum, ip_load+csum_off, 2);
+        csum = do_csum(csum, ip_h.saddr, new_ip);
+        memcpy(ip_load+csum_off, &csum, 2);    //recalculated tcp checksum
+    }
+    else if(17 == ip_h.protocol && (global_offset_ipv4_fragoff & ip_h.frag_off) == 0 )  //udp
+    {
+        int csum_off = 4*ip_h.ihl + 6;
+        memcpy(&csum, ip_load+csum_off, 2);
+        csum = do_csum(csum, ip_h.saddr, new_ip);
+        memcpy(ip_load+csum_off, &csum, 2);    //recalculated udp checksum
+    }
+    return 0;
+}
+
 void* client_read(void *arg)
 {
     struct tunnel_header header_send;
@@ -757,7 +833,7 @@ void* client_recv(void *arg)
         encrypt(buf_icv, buf_header, peer_table[peerid].psk, AES_KEY_LEN);  //encrypt header to generate icv
         if(strncmp((char*)buf_icv, (char*)&buf_recv[HEADER_LEN], ICV_LEN) != 0)
         {
-            //printf("icv doesn't match!\n");
+            printf("icv doesn't match!\n");
             continue;
         }
 
@@ -824,7 +900,6 @@ void* server_read(void *arg)
     struct sockaddr_in *peeraddr = peer_table[peerid].peeraddr;
     struct iphdr ip_h;
     uint16_t len_load, len_pad, nr_aes_block;
-    uint16_t csum = 0;
     byte buf_load[TUN_MTU];
     byte buf_send[ETH_MTU];
     byte buf_header[HEADER_LEN];
@@ -856,32 +931,16 @@ void* server_read(void *arg)
         //daddr is in the same network with global_tunif
         if((ip_h.daddr & global_tunif.mask) == (global_tunif.addr & global_tunif.mask))
         {
-            if(ip_h.saddr == global_tunif.addr)  //saddr is local tunif
+            if(peerid <= MAX_SERVER_ID && ip_h.saddr == global_tunif.addr)  //saddr is local tunif
             {
-                ;
+                //printf("sent from local tunif\n");
+                uint32_t rip = htonl(peerid) | global_between_tun_net;     //apply dnat, daddr is 127.0.x.x
+                ip_dnat(buf_load, rip);
             }
-            else //saddr is NOT local tunif
+            else //saddr is NOT local tunif, traffic passing by
             {
-                int rip = peer_table[peerid].rip;  //real ip is stored in network byte order.
-                memcpy(&buf_load[OFFSET_IPV4_DADDR], &rip, 4);     //apply dnat
-                csum = do_csum(ip_h.check, ip_h.daddr, rip);
-                memcpy(&buf_load[OFFSET_IPV4_CSUM], &csum, 2);     //recalculated ip checksum
-                //if packet is fragmented, can only recaculate the first fragment.
-                //Because the following packets don't have a layer 4 header!
-                if(6 == ip_h.protocol && !(global_offset_ipv4_fragoff & ip_h.frag_off) )    //tcp
-                {
-                    int csum_off = 4*ip_h.ihl + 16;
-                    memcpy(&csum, buf_load+csum_off, 2);
-                    csum = do_csum(csum, ip_h.daddr, rip);
-                    memcpy(buf_load+csum_off, &csum, 2);    //recalculated tcp checksum
-                }
-                else if(17 == ip_h.protocol && !(global_offset_ipv4_fragoff & ip_h.frag_off) )  //udp
-                {
-                    int csum_off = 4*ip_h.ihl + 6;
-                    memcpy(&csum, buf_load+csum_off, 2);
-                    csum = do_csum(csum, ip_h.daddr, rip);
-                    memcpy(buf_load+csum_off, &csum, 2);    //recalculated udp checksum
-                }
+                uint32_t rip = peer_table[peerid].rip;  //real ip is stored in network byte order.
+                ip_dnat(buf_load, rip);
             }
         }
 
@@ -926,8 +985,9 @@ void* server_recv(void *arg)
     struct sockaddr_in *peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
     socklen_t peeraddr_len = sizeof(*peeraddr);
     struct iphdr ip_h;
+    struct ip_dot_decimal ip_daddr;
+    struct ip_dot_decimal ip_saddr;
     uint16_t len_load, nr_aes_block;
-    uint16_t csum = 0;
     int i;
     byte * buf_psk;
     byte buf_recv[ETH_MTU];
@@ -953,7 +1013,10 @@ void* server_recv(void *arg)
         peerid = ntohs(header_recv.id);
         //printf("recv peerid: %d\n", peerid);
         if(peerid != global_self_id && false == peer_table[peerid].valid)
+        {
+            printf("received packet from invalid peer %d.%d\n", peerid/256, peerid%256);
             continue;
+        }
 
         if(peerid > global_self_id)
             buf_psk = peer_table[peerid].psk;
@@ -963,7 +1026,7 @@ void* server_recv(void *arg)
         encrypt(buf_icv, buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
         if(strncmp((char*)buf_icv, (char*)&buf_recv[HEADER_LEN], ICV_LEN) != 0)
         {
-            //printf("icv doesn't match!\n");
+            printf("packet of peer %d.%d icv doesn't match!\n", peerid/256, peerid%256);
             continue;
         }
 
@@ -973,34 +1036,47 @@ void* server_recv(void *arg)
 
         for(i=0; i<nr_aes_block; i++)
             decrypt(&buf_load[i*AES_TEXT_LEN], &buf_recv[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], buf_psk, AES_KEY_LEN);
+        
         memcpy(&ip_h, buf_load, IPV4_HEAD_LEN);
+        memcpy(&ip_saddr, &ip_h.saddr, sizeof(uint32_t));
+        memcpy(&ip_daddr, &ip_h.daddr, sizeof(uint32_t));
 
-        //daddr is 127.255.x.x, should switch packet to client
-        if((ip_h.daddr & global_tunif.mask) == (global_inter_switch_net & global_tunif.mask))
+        //ttl expire, drop packet. only allow 16 hops
+        if(127 == ip_saddr.a && ip_saddr.b < 240)
+        {
+            printf("TTL expired!\n");
+            //printf("saddr:%d.%d.%d.%d\n",ip_saddr.a,ip_saddr.b,ip_saddr.c,ip_saddr.d);
+            printf("daddr:%d.%d.%d.%d\n",ip_daddr.a,ip_daddr.b,ip_daddr.c,ip_daddr.d);   
+            continue;
+        }
+
+        //daddr is 127.0.x.x, send to local tunif, should apply both dnat and snat
+        //if((ip_h.daddr & global_tunif.mask) == (global_between_tun_net & global_tunif.mask))
+        else if(127 == ip_daddr.a && 0 == ip_daddr.b)
+        {
+            //printf("dnat to local\n");
+            //dnat first
+            uint32_t rip = global_tunif.addr;
+            ip_dnat(buf_load, rip);     //apply dnat, daddr is local tunif
+
+            //snat second
+            uint32_t vip = peer_table[peerid].vip;     //apply snat, saddr is peer's vip
+            ip_snat(buf_load, vip);
+        
+            if(write(global_tunfd, &buf_load, len_load) < 0)
+                perror("write error");
+            continue;
+        }
+
+        //daddr is 127.x.x.x, should switch packet to client
+        //else if((ip_h.daddr & global_tunif.mask) == (global_inter_switch_net & global_tunif.mask))
+        else if(127 == ip_daddr.a)
         {
             //printf("send to client\n");
             //apply dnat
             peerid = ntohl(ip_h.daddr);
-            int rip = peer_table[peerid].rip;  //real ip is stored in network byte order.
-            memcpy(&buf_load[OFFSET_IPV4_DADDR], &rip, 4);     //apply dnat
-            csum = do_csum(ip_h.check, ip_h.daddr, rip);
-            memcpy(&buf_load[OFFSET_IPV4_CSUM], &csum, 2);     //recalculated ip checksum
-            //if packet is fragmented, can only recaculate the first fragment. 
-            //Because the following packets don't have a layer 4 header!
-            if(6 == ip_h.protocol && !(global_offset_ipv4_fragoff & ip_h.frag_off) )    //tcp
-            {
-                int csum_off = 4*ip_h.ihl + 16;
-                memcpy(&csum, buf_load+csum_off, 2);
-                csum = do_csum(csum, ip_h.daddr, rip);
-                memcpy(buf_load+csum_off, &csum, 2);    //recalculated tcp checksum
-            }
-            else if(17 == ip_h.protocol && !(global_offset_ipv4_fragoff & ip_h.frag_off) )  //udp
-            {
-                int csum_off = 4*ip_h.ihl + 6;
-                memcpy(&csum, buf_load+csum_off, 2);
-                csum = do_csum(csum, ip_h.daddr, rip);
-                memcpy(buf_load+csum_off, &csum, 2);    //recalculated udp checksum
-            }
+            uint32_t rip = peer_table[peerid].rip;  //real ip is stored in network byte order.
+            ip_dnat(buf_load, rip);
 
             //encrypt and send to client
             memcpy(peeraddr, peer_table[peerid].peeraddr, sizeof(struct sockaddr_in));
@@ -1030,10 +1106,14 @@ void* server_recv(void *arg)
             if(sendto(global_sockfd, buf_send, HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN + len_pad, \
                 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
                 perror("sendto error");
+            continue;
         }
-        else //daddr is NOT 127.255.x.x
+
+        //daddr is NOT 127.x.x.x
+        else
         {
-            memcpy(peer_table[peerid].peeraddr, peeraddr, sizeof(struct sockaddr_in));    //save client's outer UDP socket.
+            if(peerid > MAX_SERVER_ID)
+                memcpy(peer_table[peerid].peeraddr, peeraddr, sizeof(struct sockaddr_in));    //save client's outer UDP socket.
             peer_table[peerid].rip = ip_h.saddr;  //save client's inner real saddr in network byte order.
     
             next_id = get_next_hop_id(ip_h.daddr, peer_table[peerid].vip);
@@ -1044,52 +1124,27 @@ void* server_recv(void *arg)
             {
                 if(ip_h.daddr == global_tunif.addr)   //send to local tunif
                 {
-                    ;
+                    ;   //do nothing
                 }
-                else   //not send to local tunif, apply snat
+                else   //not send to local tunif
                 {
-                    uint32_t vip = peer_table[peerid].vip;     //apply snat, saddr is in tunif's network
-                    memcpy(&buf_load[OFFSET_IPV4_SADDR], &vip, 4);
-                    csum = do_csum(ip_h.check, ip_h.saddr, vip);
-                    memcpy(&buf_load[OFFSET_IPV4_CSUM], &csum, 2);     //recalculated ip checksum
-                    if(6 == ip_h.protocol && !(global_offset_ipv4_fragoff & ip_h.frag_off) )    //tcp
-                    {
-                        int csum_off = 4*ip_h.ihl + 16;
-                        memcpy(&csum, buf_load+csum_off, 2);
-                        csum = do_csum(csum, ip_h.saddr, vip);
-                        memcpy(buf_load+csum_off, &csum, 2);    //recalculated tcp checksum
-                    }
-                    else if(17 == ip_h.protocol && !(global_offset_ipv4_fragoff & ip_h.frag_off) )  //udp
-                    {
-                        int csum_off = 4*ip_h.ihl + 6;
-                        memcpy(&csum, buf_load+csum_off, 2);
-                        csum = do_csum(csum, ip_h.saddr, vip);
-                        memcpy(buf_load+csum_off, &csum, 2);    //recalculated udp checksum
-                    }
+                    uint32_t vip = peer_table[peerid].vip;     //apply snat, saddr is peer's vip
+                    ip_snat(buf_load, vip);
                 }
-                if(write(global_tunfd, &buf_load, len_load) < 0 )
-                    perror("write error");            
+                
+                if(write(global_tunfd, &buf_load, len_load) < 0)
+                    perror("write error");
             }
-            else if(0 != next_id)     //send to another server
+            else if(0 != next_id)     //switch to another server
             {
                 uint32_t vip = peer_table[peerid].inter_vip;     //apply snat, saddr is 127.255.x.x
-                memcpy(&buf_load[OFFSET_IPV4_SADDR], &vip, 4);
-                csum = do_csum(ip_h.check, ip_h.saddr, vip);
-                memcpy(&buf_load[OFFSET_IPV4_CSUM], &csum, 2);     //recalculated ip checksum
-                if(6 == ip_h.protocol && !(global_offset_ipv4_fragoff & ip_h.frag_off) )    //tcp
+                if(127 == ip_saddr.a)
                 {
-                    int csum_off = 4*ip_h.ihl + 16;
-                    memcpy(&csum, buf_load+csum_off, 2);
-                    csum = do_csum(csum, ip_h.saddr, vip);
-                    memcpy(buf_load+csum_off, &csum, 2);    //recalculated tcp checksum
+                    ip_saddr.b--;   //decrease TTL
+                    memcpy(&vip, &ip_saddr, sizeof(uint32_t));
+                    vip = (vip & global_tunif.mask) | htonl(peerid); //in network byte order.
                 }
-                else if(17 == ip_h.protocol && !(global_offset_ipv4_fragoff & ip_h.frag_off) )  //udp
-                {
-                    int csum_off = 4*ip_h.ihl + 6;
-                    memcpy(&csum, buf_load+csum_off, 2);
-                    csum = do_csum(csum, ip_h.saddr, vip);
-                    memcpy(buf_load+csum_off, &csum, 2);    //recalculated udp checksum
-                }
+                ip_snat(buf_load, vip);
     
                 struct tunnel_header header_send;
                 if(next_id > global_self_id)
@@ -1126,4 +1181,3 @@ void* server_recv(void *arg)
     free(peeraddr);
     return NULL;
 }
-
