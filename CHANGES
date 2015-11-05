@@ -7,6 +7,11 @@ Todo list:
 6. IPv6
 
 
+1.2 2015-11-5
+- remove mode in main.c
+- support client to change default route between multi servers
+
+
 1.1 2015-10-1
 - add nat rule between servers
 - add TTL hop limit

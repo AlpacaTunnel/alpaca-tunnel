@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
@@ -24,10 +25,14 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 typedef enum { false, true } bool;
+
 //custom specified path: first. (not available now.)
-#define ABSOLUTE_PATH_TO_SECRETS "/etc/alpaca_tunnel.d/alpaca_secrets"  //second, if exe located at /usr/bin/
-#define ABSOLUTE_PATH_TO_SECRETS_LOCAL "/usr/local/etc/alpaca_tunnel.d/alpaca_secrets"  //second, if exe located at /usr/local/bin/
-#define RELATIVE_PATH_TO_SECRETS "alpaca_tunnel.d/alpaca_secrets"    //third, the same path with exe_file
+//second, if exe located at /usr/bin/
+#define ABSOLUTE_PATH_TO_SECRETS "/etc/alpaca_tunnel.d/alpaca_secrets"
+//second, if exe located at /usr/local/bin/
+#define ABSOLUTE_PATH_TO_SECRETS_LOCAL "/usr/local/etc/alpaca_tunnel.d/alpaca_secrets"
+//third, the same path with exe_file
+#define RELATIVE_PATH_TO_SECRETS "alpaca_tunnel.d/alpaca_secrets"
 #define PATH_LEN 1024
 #define PROCESS_NAME "AlpacaTunnel"
 
@@ -39,15 +44,13 @@ typedef enum { false, true } bool;
 #define IPV4_LEN 32
 //length of aes key must be 128, 192 or 256
 #define AES_KEY_LEN 128
-#define DEFAULT_PORT 8000
+#define DEFAULT_PORT 1984
 
-//version 0.2
 #define HEADER_LEN 16
 #define ICV_LEN 16
 /*
   all data in header are stored in network bit/byte order.
-  the id in packet header is always the sender's id, but if there is some security issue found, 
-  server can set the id as client's id (only in packets from server to client).
+  the id in packet header is always the sender's id.
 */
 struct tunnel_header
 {
@@ -123,18 +126,21 @@ struct peer_profile
     uint32_t rip;   //real client ip, will be NATed to vip
 };
 
+//client_read and client_recv are only for demostrating
 void* client_read(void *arg);
 void* client_recv(void *arg);
+
 void* server_read(void *arg);
 void* server_recv(void *arg);
 void* server_write(void *arg);
 void* server_send(void *arg);
-void * watch_link_route(void *arg);
-void * reset_link_route(void *arg);
+void* watch_link_route(void *arg);
+void* reset_link_route(void *arg);
 int tun_alloc(char *dev, int flags); 
+int printlog(int en, char* format, ...);
 int usage(char *pname);
-struct peer_profile* init_peer(FILE *secrets_file);
-int free_peer(struct peer_profile *pp);
+struct peer_profile** init_peer(FILE *secrets_file);
+int free_peer(struct peer_profile **p2);
 void sig_handler(int signum);
 uint16_t do_csum(uint16_t old_sum, uint32_t old_ip, uint32_t new_ip);
 int ip_dnat(byte* ip_load, uint32_t new_ip);
@@ -163,15 +169,15 @@ pthread_spinlock_t route_spin;
 
 int usage(char *pname)
 {
-    printf("Usage: %s [-s|-c host] [-p port] [-o source-port] [-n id] [-g group] [-k psk] [-i tun]\n", pname);
+    printf("Usage: %s [-p port] [-g group] [-n id] [-i tun]\n", pname);
     return 0;
 }
 
 int main(int argc, char *argv[])
 {
-/*    for(int ii=1; ii<RT_TB_SIZE+1; ii++)
+    /*    
+    for(int ii=1; ii<RT_TB_SIZE+1; ii++)
         add_route(ii,ii,ii);
-
     
     int nid = get_route(123, 123);
     printf("%d\n", nid);
@@ -200,86 +206,87 @@ int main(int argc, char *argv[])
     printf("if2: %d\n", if2);
     printf("n3: %d\n", n3);
 
-
     printf("took %lu\n", stop.tv_sec - start.tv_sec);
     printf("took %lu\n", stop.tv_usec - start.tv_usec);
-*/
+    */
 
     //printf("sizeof packet_profile: %d\n", sizeof(struct packet_profile));
+    //printlog(0, "%d %d\n", 1, 2);
+    //printlog(2, "%s %s", "a", "b");
     pthread_spin_init(&route_spin, PTHREAD_PROCESS_PRIVATE);
     global_if_list = NULL;
     collect_if_info(&global_if_list);
     global_offset_ipv4_fragoff = htons(OFFSET_IPV4_FRAGOFF);
     global_inter_switch_net = htonl(INTER_SWITCH_NET);
     global_between_tun_net = htonl(BETWEEN_TUN_NET);
+    global_running = 1;
 
     int rc1=0, rc2=0, rc5=0, rc6=0;
     //uint16_t clid = 0;
-    struct peer_profile * peer_table = NULL;
+    struct peer_profile ** peer_table = NULL;
     pthread_t tid1=0, tid2=0, tid5=0, tid6=0;
-    struct sockaddr_in servaddr, cliaddr;
-    int serv_port = DEFAULT_PORT;
-    int client_local_port = 0;
-    char serv_host[IPV4_LEN] = "\0";
+    struct sockaddr_in servaddr;
+    int port = DEFAULT_PORT;
     char tun_name[IFNAMSIZ] = "\0";
     byte buf_psk[2*AES_TEXT_LEN] = "\0";
     char exe_path[PATH_LEN] = "\0";
     char secrets_path[PATH_LEN] = "\0";
 
     int opt;
-    while((opt = getopt(argc, argv, "sc:o:p:k:i:n:g:")) != -1)
+    while((opt = getopt(argc, argv, "p:g:n:i:")) != -1)
     {
         switch(opt)
         {
-        case 's':
-            global_mode = server;
-            break;
-        case 'c':
-            global_mode = client;
-            strncpy(serv_host, optarg, IPV4_LEN);
-            serv_host[IPV4_LEN-1] = '\0';
-            if(0 == inet_pton(AF_INET, serv_host, &servaddr.sin_addr))
-                printf("Invalid host!\n"), exit(1);
-            break;
         case 'p':
-            if( (serv_port = atoi(optarg)) < 1)
-                printf("Invalid server port!\n"), exit(1);
-            break;
-        case 'o':
-            if( (client_local_port = atoi(optarg)) < 1)
-                printf("Invalid local port!\n"), exit(1);
-            break;
-        case 'k':
-            strncpy((char*)buf_psk, optarg, 2*AES_TEXT_LEN);
+            port = atoi(optarg);
+            if(port < 0 || port > 65534)
+            {
+                printlog(0, "error: Invalid port: %s!\n", port);
+                printlog(0, "%s has exited.\n", PROCESS_NAME);
+                exit(1);
+            }
             break;
         case 'g':
             strncpy((char*)global_buf_group_psk, optarg, 2*AES_TEXT_LEN);
             break;
-        case 'i':
-            strncpy(tun_name, optarg, IFNAMSIZ);
-            break;
         case 'n':
             global_self_id = inet_ptons(optarg);
             break;
+        case 'i':
+            strncpy(tun_name, optarg, IFNAMSIZ);
+            break;
         default:
+            printlog(0, "%s has exited.\n", PROCESS_NAME);
             usage(argv[0]);
             exit(1);
         }
     }
-    if(none == global_mode) 
-        usage(argv[0]), exit(1);
-    if(client == global_mode)
+    
+    if(0 == global_self_id)
     {
-        if(0 == global_self_id)
-            printf("client ID not set!\n"), exit(1);
-        if(1 == global_self_id || MAX_ID == global_self_id)
-            printf("client ID cannot be 0.1 or 255.255!\n"), exit(1);
+        printlog(0, "error: ID not set or wrong format!\n");
+        usage(argv[0]);
+        printlog(0, "%s has exited.\n", PROCESS_NAME);
+        exit(1);
     }
-
+    if(1 == global_self_id || MAX_ID == global_self_id)
+    {
+        printlog(0, "error: ID cannot be 0.1 or 255.255!\n");
+        printlog(0, "%s has exited.\n", PROCESS_NAME);
+        exit(1);
+    }
+    
     if('\0' == tun_name[0])
-        usage(argv[0]), exit(1);
+    {
+        printlog(0, "%s has exited.\n", PROCESS_NAME);
+        usage(argv[0]);
+        exit(1);
+    }
     if( (global_tunfd = tun_alloc(tun_name, IFF_TUN | IFF_NO_PI)) < 0 )
-        printf("Opening tunnel interface error!\n"), exit(1);
+    {
+        printlog(0, "%s has exited.\n", PROCESS_NAME);
+        exit(1);
+    }
     strncpy(global_tunif.name, tun_name, IFNAMSIZ);
 
     global_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -289,141 +296,103 @@ int main(int argc, char *argv[])
     strncpy(tmp_ifr.ifr_name, tun_name, IFNAMSIZ-1);
     if(ioctl(global_sockfd, SIOCGIFADDR, &tmp_ifr) < 0)
     {
-        perror("ioctl(SIOCGIFADDR)");
+        printlog(errno, "ioctl(SIOCGIFADDR) error: %s",global_tunif.name);
         goto _END;
     }
     struct sockaddr_in *tmp_in = (struct sockaddr_in *)&tmp_ifr.ifr_addr;
     global_tunif.addr = tmp_in->sin_addr.s_addr;
     global_tunif.mask = get_ipmask(global_tunif.addr);
     if(TUN_NETMASK != ntohl(global_tunif.mask))
-        printf("warning: tunnel mask is not /16\n");
+    {
+        printlog(0, "error: tunnel mask is not /16\n");
+        goto _END;
+    }
     if((uint16_t)(ntohl(global_tunif.addr)) != global_self_id)
     {
-        printf("tunnel ip does not match ID!\n");
+        printlog(0, "error: tunnel ip does not match ID!\n");
         goto _END;
     }
 
+    if('\0' == secrets_path[0])
+    {
+        int path_len = readlink("/proc/self/exe", exe_path, PATH_LEN);
+        if(path_len < 0)
+        {
+            printlog(errno, "readlink error: /proc/self/exe");
+            goto _END;
+        }
+        else if(path_len > (PATH_LEN-40))   //40 is reserved for strcat.
+        {
+            printlog(0, "readlink error: file path too long!\n");
+            goto _END;
+        }
+        while(exe_path[path_len] != '/')
+        {
+            exe_path[path_len] = '\0';
+            path_len--;
+        }
+        strcpy(secrets_path, exe_path);
+        if(strcmp(exe_path, "/usr/bin/") == 0)
+            strcpy(secrets_path, ABSOLUTE_PATH_TO_SECRETS);
+        else if(strcmp(exe_path, "/usr/local/bin/") == 0)
+            strcpy(secrets_path, ABSOLUTE_PATH_TO_SECRETS_LOCAL);
+        else
+            strcat(secrets_path, RELATIVE_PATH_TO_SECRETS);
+    }
+
+    FILE *secrets_file = NULL;
+    if((secrets_file = fopen(secrets_path, "r")) == NULL)
+    {
+        printlog(errno, "open file error: %s", secrets_path);
+        goto _END;
+    }
+    if((peer_table = init_peer(secrets_file)) == NULL)
+    {
+        printlog(0, "init peer failed!\n");
+        fclose(secrets_file);
+        goto _END;
+    }
+    fclose(secrets_file);
+    peer_table[0]->id = global_self_id;
+    memcpy(peer_table[0]->psk, buf_psk, 2*AES_TEXT_LEN);
+
     bzero(&servaddr, sizeof(servaddr));
     servaddr.sin_family = AF_INET;
-    servaddr.sin_port = htons(serv_port);
-
-    global_running = 1;
-
-    if(client == global_mode)
+    servaddr.sin_port = htons(port);
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if(bind(global_sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0)
     {
-        if((peer_table = init_peer(NULL)) == NULL)
-        {
-            printf("init peer failed!\n");
-            goto _END;
-        }
-        peer_table[0].id = global_self_id;
-        inet_pton(AF_INET, serv_host, &servaddr.sin_addr);
-        memcpy(peer_table[0].peeraddr, &servaddr, sizeof(struct sockaddr_in));
-        memcpy(peer_table[0].psk, buf_psk, 2*AES_TEXT_LEN);
+        printlog(errno, "bind error: port %d", port);
+        goto _END;
+    }
 
-        bzero(&cliaddr, sizeof(cliaddr));
-        cliaddr.sin_family = AF_INET;
-        cliaddr.sin_port = htons(client_local_port);
-        cliaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-        if(bind(global_sockfd, (struct sockaddr *)&cliaddr, sizeof(cliaddr)) < 0)
-        {
-            perror("bind error");
-            goto _END;
-        }
-
-        if( (rc1 = pthread_create(&tid1, NULL, client_recv, peer_table)) != 0 )
-        {
-            perror("pthread_error"); 
-            goto _END;
-        }
-        if( (rc2 = pthread_create(&tid2, NULL, client_read, peer_table)) != 0 )
-        {
-            perror("pthread_error"); 
-            goto _END;
-        }
+    if( (rc1 = pthread_create(&tid1, NULL, server_recv, peer_table)) != 0 )
+    {
+        printlog(errno, "pthread_error: create rc1"); 
+        goto _END;
+    }
+    if( (rc2 = pthread_create(&tid2, NULL, server_read, peer_table)) != 0 )
+    {
+        printlog(errno, "pthread_error: create rc2"); 
+        goto _END;
     }
     
-    if(server == global_mode)
+    if( (rc5 = pthread_create(&tid5, NULL, watch_link_route, NULL)) != 0 )
     {
-        if('\0' == secrets_path[0])
-        {
-            int path_len = readlink("/proc/self/exe", exe_path, PATH_LEN);
-            if(path_len < 0)
-            {
-                perror("readlink error");
-                goto _END;
-            }
-            else if(path_len > (PATH_LEN-40))   //40 is reserved for strcat.
-            {
-                printf("readlink error: file path too long!\n");
-                goto _END;
-            }
-            while(exe_path[path_len] != '/')
-            {
-                exe_path[path_len] = '\0';
-                path_len--;
-            }
-            strcpy(secrets_path, exe_path);
-            if(strcmp(exe_path, "/usr/bin/") == 0)
-                strcpy(secrets_path, ABSOLUTE_PATH_TO_SECRETS);
-            else if(strcmp(exe_path, "/usr/local/bin/") == 0)
-                strcpy(secrets_path, ABSOLUTE_PATH_TO_SECRETS_LOCAL);
-            else
-                strcat(secrets_path, RELATIVE_PATH_TO_SECRETS);
-        }
-
-        FILE *secrets_file = NULL;
-        if((secrets_file = fopen(secrets_path, "r")) == NULL)
-        {
-            perror("open file error");
-            goto _END;
-        }
-        if((peer_table = init_peer(secrets_file)) == NULL)
-        {
-            printf("init peer failed!\n");
-            fclose(secrets_file);
-            goto _END;
-        }
-        fclose(secrets_file);
-
-        peer_table[0].id = global_self_id;
-        memcpy(peer_table[0].psk, buf_psk, 2*AES_TEXT_LEN);
-        servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-        if(bind(global_sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0)
-        {
-            perror("bind error"); 
-            goto _END;
-        }
-
-        //allocate memory for write/send buffer
-
-        if( (rc1 = pthread_create(&tid1, NULL, server_recv, peer_table)) != 0 )
-        {
-            perror("pthread_error"); 
-            goto _END;
-        }
-        if( (rc2 = pthread_create(&tid2, NULL, server_read, peer_table)) != 0 )
-        {
-            perror("pthread_error"); 
-            goto _END;
-        }
-        if( (rc5 = pthread_create(&tid5, NULL, watch_link_route, NULL)) != 0 )
-        {
-            perror("pthread_error"); 
-            goto _END;
-        }
-        if( (rc6 = pthread_create(&tid6, NULL, reset_link_route, NULL)) != 0 )
-        {
-            perror("pthread_error"); 
-            goto _END;
-        }
+        printlog(errno, "pthread_error: create rc5"); 
+        goto _END;
     }
-
+    if( (rc6 = pthread_create(&tid6, NULL, reset_link_route, NULL)) != 0 )
+    {
+        printlog(errno, "pthread_error: create rc6"); 
+        goto _END;
+    }
+    
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
     //nohup won't work when SIGHUP installed.
     signal(SIGHUP, sig_handler);
-    printf("%s has started.\n", PROCESS_NAME);
+    printlog(0, "%s has started.\n", PROCESS_NAME);
     while(global_running)
         pause();
 
@@ -440,8 +409,9 @@ _END:
     close(global_sockfd);
     close(global_tunfd);
     free_peer(peer_table);
+    peer_table = NULL;
     //free(peer_table);
-    printf("%s has exited.\n", PROCESS_NAME);
+    printlog(0, "%s has exited.\n", PROCESS_NAME);
     return 0;
 }
 
@@ -479,16 +449,49 @@ int16_t inet_ptons(char *a)
 void sig_handler(int signum)
 {
     if(SIGINT == signum)
-        printf("received SIGINT!\n");
+        printlog(0, "received SIGINT!\n");
     else if(SIGTERM == signum)
-        printf("received SIGTERM!\n");
+        printlog(0, "received SIGTERM!\n");
     else if(SIGHUP == signum)
     {
-        printf("received SIGHUP!\n");
+        printlog(0, "received SIGHUP!\n");
         return; //do nothing
     }
 
     global_running = 0;
+}
+
+int printlog(int en, char* format, ...)
+{
+    va_list arglist;
+    time_t timer;
+    char tm_buf[64];
+    struct tm* tm_info;
+
+    time(&timer);
+    tm_info = localtime(&timer);
+
+    strftime(tm_buf, 64, "%Y-%m-%d %H:%M:%S", tm_info);
+    if(0 == en)
+    {
+        printf("%s ", tm_buf);
+        va_start(arglist, format);
+        vprintf(format, arglist);
+        va_end(arglist);
+    }
+    else
+    {
+        fprintf(stderr, "%s ", tm_buf);
+        va_start(arglist, format);
+        vfprintf(stderr, format, arglist);
+        va_end(arglist);
+
+        errno = en;
+        perror(" ");
+    }
+    //fflush(NULL);
+
+    return 0;
 }
 
 int tun_alloc(char *dev, int flags) 
@@ -499,7 +502,7 @@ int tun_alloc(char *dev, int flags)
 
     if( (fd = open(clonedev, O_RDWR)) < 0 ) 
     {
-        perror("Opening /dev/net/tun");
+        printlog(errno, "Opening /dev/net/tun");
         return fd;
     }
 
@@ -511,7 +514,7 @@ int tun_alloc(char *dev, int flags)
 
     if( (err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0 ) 
     {
-        perror("ioctl(TUNSETIFF)");
+        printlog(errno, "ioctl(TUNSETIFF) error: %s", dev);
         close(fd);
         return err;
     }
@@ -521,45 +524,39 @@ int tun_alloc(char *dev, int flags)
     return fd;
 }
 
-struct peer_profile* init_peer(FILE *secrets_file)
+struct peer_profile** init_peer(FILE *secrets_file)
 {
-    int i;
-    struct peer_profile *pp;
-    int peer_num = 0;
-    if(client == global_mode)
-        peer_num = 1;
-    if(server == global_mode)
-        peer_num = MAX_ID+1;
+    if(NULL == secrets_file)
+        return NULL;
 
-    pp = (struct peer_profile *)malloc(peer_num * sizeof(struct peer_profile));
-    if(pp == NULL)
+    int i;
+    int peer_num = MAX_ID+1;
+    struct peer_profile ** p2 = (struct peer_profile **)malloc((MAX_ID+1) * sizeof(struct peer_profile*));
+    if(p2 == NULL)
     {
-        perror("malloc failed!");
+        printlog(errno, "init_peer: malloc failed");
         return NULL;
     }
-
     for(i = 0; i < peer_num; i++)
+        p2[i] = NULL;
+
+    struct peer_profile * p1 = (struct peer_profile *)malloc(sizeof(struct peer_profile));
+    if(p1 == NULL)
     {
-        pp[i].id = i;
-        pp[i].valid = false;
-        pp[i].dup = false;
-        pp[i].peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
-        if(pp[i].peeraddr == NULL)
-        {
-            perror("malloc failed!");
-            return NULL;
-        }
-        pp[i].vip = (global_tunif.addr & global_tunif.mask) | htonl(i); //in network byte order.
-        pp[i].inter_vip = (global_inter_switch_net & global_tunif.mask) | htonl(i); //in network byte order.
-        pp[i].rip = 0;
-        bzero(pp[i].peeraddr, sizeof(struct sockaddr_in));
-        bzero(pp[i].psk, 2*AES_TEXT_LEN);
-        strncpy((char*)pp[i].psk, "zaiyici,FUCKnimadeGFW!", 2*AES_TEXT_LEN);
+        printlog(errno, "init_peer: malloc failed");
+        free_peer(p2); 
+        p2 = NULL;
+        return NULL;
     }
-    if(NULL == secrets_file || client == global_mode) //for client
+    p1->valid = true;
+
+    struct sockaddr_in * peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+    if(peeraddr == NULL)
     {
-        pp[0].valid = true;
-        return pp;
+        printlog(errno, "init_peer: malloc failed");
+        free_peer(p2);
+        p2 = NULL;
+        return NULL;
     }
 
     int id = 0;
@@ -567,7 +564,7 @@ struct peer_profile* init_peer(FILE *secrets_file)
     char *psk = NULL;
     char *ip = NULL;
     char *ip6 = NULL;
-    char *port = NULL;
+    char *port_str = NULL;
 
     size_t len = 1024;
     char *line = (char *)malloc(len);
@@ -579,69 +576,87 @@ struct peer_profile* init_peer(FILE *secrets_file)
         psk = strtok(NULL, " ");
         ip = strtok(NULL, " ");
         ip6 = strtok(NULL, " ");
-        port = strtok(NULL, " ");
+        port_str = strtok(NULL, " ");
 
         if(NULL == id_str)
             continue;
         if(NULL == psk)
         {
-            printf("Warning: PSK of ID %s not found!\n", id_str);
+            printlog(0, "Warning: PSK of ID %s not found, ignore this peer!\n", id_str);
             continue;
         }
         id = inet_ptons(id_str);
         if(0 == id)
         {
-            printf("Warning: the ID of %s may be wrong!\n", id_str);
+            printlog(0, "Warning: the ID of %s may be wrong, ignore this peer!\n", id_str);
             continue;
         }
-        if(id == global_self_id)
+        if(p2[id] != NULL)
+            printlog(0, "Warning: the ID of %s may be duplicate, use the last one!\n", id_str);
+        p1->id = id;
+        bzero(p1->psk, 2*AES_TEXT_LEN);
+        strncpy((char*)p1->psk, psk, 2*AES_TEXT_LEN);
+        
+        struct sockaddr_in * tmpaddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+        if(tmpaddr == NULL)
         {
-            printf("Warning: don't put server's self profile in secert file, ignore it!\n");
-            continue;
+            printlog(errno, "init_peer: malloc failed");
+            free_peer(p2);
+            p2 = NULL;
+            return NULL;
         }
-        if(true == pp[id].valid)
-            printf("Warning: the ID of %s may be duplicate!\n", id_str);
-        bzero(pp[i].psk, 2*AES_TEXT_LEN);
-        strncpy((char*)pp[id].psk, psk, 2*AES_TEXT_LEN);
-        pp[id].valid = true;
 
-        //for servers:
-        if(id <= MAX_SERVER_ID)
+        if(port_str != NULL) //port_str must be parsed before ip, because servaddr.sin_port uses it.
         {
-            if(NULL == port)
-            {
-                printf("Warning: server %s lack one or more parameter(s)!\n", id_str);
-                continue;
-            }
-            int p = atoi(port);
-            if(p < 1)
-            {
-                printf("Warning: invalid PORT of server: %s\n", id_str);
-                continue;
-            }
-            pp[id].port = p;
-            if(strcmp(ip, "none") == 0 && strcmp(ip, "none") == 0)
-                printf("Warning: IP/IPv6 address of server %s not found!\n", id_str);
-
-            if(strcmp(ip, "none") != 0)
-            {
-                struct sockaddr_in servaddr = *(pp[id].peeraddr);
-                if(0 == inet_pton(AF_INET, ip, &servaddr.sin_addr))
-                    printf("Warning: invalid IP of server: %s!\n", id_str);
-                servaddr.sin_family = AF_INET;
-                servaddr.sin_port = htons(pp[id].port);
-                memcpy(pp[id].peeraddr, &servaddr, sizeof(struct sockaddr_in));
-            }
-            if(strcmp(ip6, "none") != 0)
-                printf("ip6\n");
+            int port = atoi(port_str);
+            if(port < 1)
+                printlog(0, "Warning: invalid PORT of peer: %s, ingore it's port value!\n", id_str);
+            p1->port = port;
         }
+
+        if(ip != NULL && strcmp(ip, "none") != 0)
+        {
+            struct sockaddr_in servaddr = *peeraddr;
+            if(0 == inet_pton(AF_INET, ip, &servaddr.sin_addr))
+                printlog(0, "Warning: invalid IP of peer: %s, ingore it's IP value!\n", id_str);
+            servaddr.sin_family = AF_INET;
+            servaddr.sin_port = htons(p1->port);
+            memcpy(tmpaddr, &servaddr, sizeof(struct sockaddr_in));
+        }
+        p1->peeraddr = tmpaddr;
+
+        if(ip6 != NULL && strcmp(ip6, "none") != 0)
+            printlog(0, "IPv6 not supported now, ignore it!\n");
+
+        p1->vip = (global_tunif.addr & global_tunif.mask) | htonl(id); //in network byte order.
+        p1->inter_vip = (global_inter_switch_net & global_tunif.mask) | htonl(id); //in network byte order.
+        p1->rip = 0;
+
+        struct peer_profile * tmp1 = (struct peer_profile *)malloc(sizeof(struct peer_profile));
+        if(tmp1 == NULL)
+        {
+            printlog(errno, "init_peer: malloc failed");
+            free_peer(p2);
+            p2 = NULL;
+            return NULL;
+        }
+        memcpy(tmp1, p1, sizeof(struct peer_profile));
+        p2[id] = tmp1;
     }
     free(line);
-    pp[0].valid = false;
-    pp[1].valid = false;
-    pp[MAX_ID].valid = false;
 
-    return pp;
+    if(NULL == p2[global_self_id])
+    {
+        printlog(0, "init peer error: didn't find self profile in secert file!\n");
+        free_peer(p2);
+        p2 = NULL;
+        return NULL;
+    }
+
+    p1->peeraddr = peeraddr;
+    p2[0] = p1;
+
+    return p2;
 }
 
 int shrink_line(char *line)
@@ -657,22 +672,22 @@ int shrink_line(char *line)
     return strlen(line);
 }
 
-int free_peer(struct peer_profile *pp)
+int free_peer(struct peer_profile **p2)
 {
-    if(NULL == pp)
+    if(NULL == p2)
         return 0;
 
-    int peer_num = 0;
-    if(client == global_mode)
-        peer_num = 1;
-    if(server == global_mode)
-        peer_num = MAX_ID+1;
+    int peer_num = MAX_ID+1;
     
     int i;
     for(i = 0; i < peer_num; i++)
-        free(pp[i].peeraddr);
+        if(p2[i] != NULL)
+        {
+            free(p2[i]->peeraddr);
+            free(p2[i]);
+        }
 
-    free(pp);
+    free(p2);
     return 0;
 }
 
@@ -759,6 +774,7 @@ void* client_read(void *arg)
     struct tunnel_header header_send;
     struct peer_profile * peer_table = (struct peer_profile *)arg;
     uint16_t peerid = 0;
+    struct iphdr ip_h;
     struct sockaddr_in *peeraddr = peer_table[peerid].peeraddr;
     uint16_t len_load, len_pad, nr_aes_block;
     byte buf_load[TUN_MTU];
@@ -774,7 +790,16 @@ void* client_read(void *arg)
     {
         if( (len_load = read(global_tunfd, buf_load, TUN_MTU)) < 0 )
         {
-            perror("read error");
+            printlog(errno, "tunif %s read error", global_tunif.name);
+            continue;
+        }
+
+        memcpy(&ip_h, buf_load, IPV4_HEAD_LEN);
+        peerid = get_next_hop_id(ip_h.daddr, ip_h.saddr);
+        
+        if(false == peer_table[peerid].valid || 1 == peerid || global_self_id == peerid)
+        {
+            printlog(0, "tunif %s read packet to peer %d.%d: invalid peer!\n", global_tunif.name, peerid/256, peerid%256);
             continue;
         }
 
@@ -788,17 +813,20 @@ void* client_read(void *arg)
         header_send.padding = random();
 
         memcpy(buf_header, &header_send, HEADER_LEN);
-        encrypt(buf_send, buf_header, global_buf_group_psk, AES_KEY_LEN);  //encrypt header with group PSK
-        encrypt(&buf_send[HEADER_LEN], buf_header, peer_table[peerid].psk, AES_KEY_LEN);  //encrypt header to generate icv
+        //encrypt header with group PSK
+        encrypt(buf_send, buf_header, global_buf_group_psk, AES_KEY_LEN);
+        //encrypt header to generate icv
+        encrypt(&buf_send[HEADER_LEN], buf_header, peer_table[peerid].psk, AES_KEY_LEN);
 
         nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
         for(i=0; i<nr_aes_block; i++)
-            encrypt(&buf_send[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], &buf_load[i*AES_TEXT_LEN], peer_table[peerid].psk, AES_KEY_LEN);
+            encrypt(&buf_send[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], 
+                &buf_load[i*AES_TEXT_LEN], peer_table[peerid].psk, AES_KEY_LEN);
 
         len_pad = (len_load > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
         if(sendto(global_sockfd, buf_send, HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN + len_pad, \
             0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
-            perror("sendto error");
+            printlog(errno, "tunif %s sendto socket error", global_tunif.name);
     }
 
     return NULL;
@@ -822,7 +850,7 @@ void* client_recv(void *arg)
     {
         if(recvfrom(global_sockfd, buf_recv, ETH_MTU, 0, (struct sockaddr *)peeraddr, &peeraddr_len) < HEADER_LEN+ICV_LEN)
         {
-            perror("recvfrom error");
+            printlog(errno, "tunif %s recvfrom socket error", global_tunif.name);
             continue;
         }
 
@@ -833,7 +861,7 @@ void* client_recv(void *arg)
         encrypt(buf_icv, buf_header, peer_table[peerid].psk, AES_KEY_LEN);  //encrypt header to generate icv
         if(strncmp((char*)buf_icv, (char*)&buf_recv[HEADER_LEN], ICV_LEN) != 0)
         {
-            printf("icv doesn't match!\n");
+            printlog(0, "tunif %s icv doesn't match!\n", global_tunif.name);
             continue;
         }
 
@@ -842,17 +870,18 @@ void* client_recv(void *arg)
         nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
 
         for(i=0; i<nr_aes_block; i++)
-            decrypt(&buf_load[i*AES_TEXT_LEN], &buf_recv[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], peer_table[peerid].psk, AES_KEY_LEN);
+            decrypt(&buf_load[i*AES_TEXT_LEN], 
+                &buf_recv[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], peer_table[peerid].psk, AES_KEY_LEN);
 
         if(write(global_tunfd, &buf_load, len_load) < 0 )
-            perror("write error");
+            printlog(errno, "tunif %s write error", global_tunif.name);
     }
 
     free(peeraddr);
     return NULL;
 }
 
-void * watch_link_route(void *arg)
+void* watch_link_route(void *arg)
 {
     char buf[8192];
     struct rtnl_handle rth;
@@ -870,7 +899,7 @@ void * watch_link_route(void *arg)
     return NULL;
 }
 
-void * reset_link_route(void *arg)
+void* reset_link_route(void *arg)
 {
     int pre = global_sysroute_change;
     while(global_running)
@@ -883,21 +912,20 @@ void * reset_link_route(void *arg)
             collect_if_info(&global_if_list);
             //must clear if_info first
             clear_route();
-            printf("RTNETLINK: route changed!\n");
+            printlog(0, "RTNETLINK: route changed!\n");
             pre = global_sysroute_change;
         }
     }
     return NULL;
 }
 
-
 void* server_read(void *arg)
 {
     struct tunnel_header header_send;
-    struct peer_profile * peer_table = (struct peer_profile *)arg;
+    struct peer_profile ** peer_table = (struct peer_profile **)arg;
     uint16_t peerid = 0;
     uint16_t next_id = 0;
-    struct sockaddr_in *peeraddr = peer_table[peerid].peeraddr;
+    struct sockaddr_in *peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
     struct iphdr ip_h;
     uint16_t len_load, len_pad, nr_aes_block;
     byte buf_load[TUN_MTU];
@@ -914,42 +942,49 @@ void* server_read(void *arg)
     {
         if( (len_load = read(global_tunfd, buf_load, TUN_MTU)) < 0 )
         {
-            perror("read error");
+            printlog(errno, "tunif %s read error", global_tunif.name);
             continue;
         }
 
-        //printf("read:1 \n" );
+        //printlog(0, "read:1 \n" );
         memcpy(&ip_h, buf_load, IPV4_HEAD_LEN);
         next_id = get_next_hop_id(ip_h.daddr, ip_h.saddr);
-        //printf("in read: dest: %d\n", next_id);
+        //printlog(0, "in read: dest: %d\n", next_id);
 
         //peerid = (uint16_t)ntohl(ip_h.daddr);
         peerid = next_id;
-        if(false == peer_table[peerid].valid || 1 == peerid || global_self_id == peerid)
+        if(NULL == peer_table[peerid] || 1 == peerid || global_self_id == peerid)
+        {
+            printlog(0, "tunif %s read packet to peer %d.%d: invalid peer!\n", global_tunif.name, peerid/256, peerid%256);
             continue;
+        }
+        if(NULL == peer_table[peerid]->peeraddr)
+        {
+            printlog(0, "tunif %s read packet to peer %d.%d: invalid addr!\n", global_tunif.name, peerid/256, peerid%256);
+            continue;
+        }
+        memcpy(peeraddr, peer_table[peerid]->peeraddr, sizeof(struct sockaddr_in));
 
         //daddr is in the same network with global_tunif
         if((ip_h.daddr & global_tunif.mask) == (global_tunif.addr & global_tunif.mask))
         {
-            if(peerid <= MAX_SERVER_ID && ip_h.saddr == global_tunif.addr)  //saddr is local tunif
+            if(ip_h.saddr == global_tunif.addr)  //saddr is local tunif
             {
-                //printf("sent from local tunif\n");
+                //printlog(0, "sent from local tunif\n");
                 uint32_t rip = htonl(peerid) | global_between_tun_net;     //apply dnat, daddr is 127.0.x.x
                 ip_dnat(buf_load, rip);
             }
             else //saddr is NOT local tunif, traffic passing by
             {
-                uint32_t rip = peer_table[peerid].rip;  //real ip is stored in network byte order.
+                uint32_t rip = peer_table[peerid]->rip;  //real ip is stored in network byte order.
                 ip_dnat(buf_load, rip);
             }
         }
-
-        memcpy(peeraddr, peer_table[peerid].peeraddr, sizeof(struct sockaddr_in));
         
         if(peerid > global_self_id)
-            buf_psk = peer_table[peerid].psk;
+            buf_psk = peer_table[peerid]->psk;
         else
-            buf_psk = peer_table[0].psk;
+            buf_psk = peer_table[global_self_id]->psk;
         header_send.id = htons(global_self_id);
         header_send.m_type_len = 0;
         header_send.m_type_len |= ( HEAD_MASK_MORE & HEAD_MORE_FALSE );
@@ -970,16 +1005,17 @@ void* server_read(void *arg)
         len_pad = (len_load > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
         if(sendto(global_sockfd, buf_send, HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN + len_pad, \
             0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
-            perror("sendto error");
+            printlog(errno, "tunif %s sendto socket error", global_tunif.name);
     }
 
+    free(peeraddr);
     return NULL;
 }
 
 void* server_recv(void *arg)
 {
     struct tunnel_header header_recv, header_send;
-    struct peer_profile * peer_table = (struct peer_profile *)arg;
+    struct peer_profile ** peer_table = (struct peer_profile **)arg;
     uint16_t peerid = 0;
     uint16_t next_id = 0;
     struct sockaddr_in *peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
@@ -995,40 +1031,43 @@ void* server_recv(void *arg)
     byte buf_send[TUN_MTU];
     byte buf_header[HEADER_LEN];
     byte buf_icv[ICV_LEN];
-    printf("global_self_id: %d\n", global_self_id);
+    //printlog(0, "global_self_id: %d\n", global_self_id);
 
     while(global_running)
     {
         if(recvfrom(global_sockfd, buf_recv, ETH_MTU, 0, (struct sockaddr *)peeraddr, &peeraddr_len) < HEADER_LEN+ICV_LEN)
         {
-            perror("recvfrom error");
+            printlog(errno, "tunif %s recvfrom socket error", global_tunif.name);
             continue;
         }
 
-        //printf("recved :1 \n" );
+        //printlog(0, "recved :1 \n" );
         decrypt(buf_header, buf_recv, global_buf_group_psk, AES_KEY_LEN);  //decrypt header with group PSK
         memcpy(&header_recv, buf_header, HEADER_LEN);
         //header_recv.time = ntohl(header_recv.time);
         
         peerid = ntohs(header_recv.id);
-        //printf("recv peerid: %d\n", peerid);
-        if(peerid != global_self_id && false == peer_table[peerid].valid)
+        //printlog(0, "recv peerid: %d\n", peerid);
+        if(peerid != global_self_id && NULL == peer_table[peerid])
         {
-            printf("received packet from invalid peer %d.%d\n", peerid/256, peerid%256);
+            printlog(0, "tunif %s received packet from peer %d.%d: invalid peer!\n", 
+                global_tunif.name, peerid/256, peerid%256);
             continue;
         }
 
         if(peerid > global_self_id)
-            buf_psk = peer_table[peerid].psk;
+            buf_psk = peer_table[peerid]->psk;
         else
-            buf_psk = peer_table[0].psk;
+            buf_psk = peer_table[global_self_id]->psk;
 
         encrypt(buf_icv, buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
         if(strncmp((char*)buf_icv, (char*)&buf_recv[HEADER_LEN], ICV_LEN) != 0)
         {
-            printf("packet of peer %d.%d icv doesn't match!\n", peerid/256, peerid%256);
+            printlog(0, "tunif %s received packet from peer %d.%d: icv doesn't match!\n", 
+                global_tunif.name, peerid/256, peerid%256);
             continue;
         }
+        memcpy(peer_table[peerid]->peeraddr, peeraddr, sizeof(struct sockaddr_in));
 
         header_recv.m_type_len = ntohs(header_recv.m_type_len);
         len_load = HEAD_MASK_LEN & header_recv.m_type_len;
@@ -1044,9 +1083,8 @@ void* server_recv(void *arg)
         //ttl expire, drop packet. only allow 16 hops
         if(127 == ip_saddr.a && ip_saddr.b < 240)
         {
-            printf("TTL expired!\n");
-            //printf("saddr:%d.%d.%d.%d\n",ip_saddr.a,ip_saddr.b,ip_saddr.c,ip_saddr.d);
-            printf("daddr:%d.%d.%d.%d\n",ip_daddr.a,ip_daddr.b,ip_daddr.c,ip_daddr.d);   
+            //printlog(0, "saddr:%d.%d.%d.%d\n",ip_saddr.a,ip_saddr.b,ip_saddr.c,ip_saddr.d);
+            printlog(0, "TTL expired! daddr: %d.%d.%d.%d\n", ip_daddr.a, ip_daddr.b, ip_daddr.c, ip_daddr.d);   
             continue;
         }
 
@@ -1054,17 +1092,17 @@ void* server_recv(void *arg)
         //if((ip_h.daddr & global_tunif.mask) == (global_between_tun_net & global_tunif.mask))
         else if(127 == ip_daddr.a && 0 == ip_daddr.b)
         {
-            //printf("dnat to local\n");
+            //printlog(0, "dnat to local\n");
             //dnat first
             uint32_t rip = global_tunif.addr;
             ip_dnat(buf_load, rip);     //apply dnat, daddr is local tunif
 
             //snat second
-            uint32_t vip = peer_table[peerid].vip;     //apply snat, saddr is peer's vip
+            uint32_t vip = peer_table[peerid]->vip;     //apply snat, saddr is peer's vip
             ip_snat(buf_load, vip);
         
             if(write(global_tunfd, &buf_load, len_load) < 0)
-                perror("write error");
+                printlog(errno, "tunif %s write error", global_tunif.name);
             continue;
         }
 
@@ -1072,14 +1110,14 @@ void* server_recv(void *arg)
         //else if((ip_h.daddr & global_tunif.mask) == (global_inter_switch_net & global_tunif.mask))
         else if(127 == ip_daddr.a)
         {
-            //printf("send to client\n");
+            //printlog(0, "send to client\n");
             //apply dnat
             peerid = ntohl(ip_h.daddr);
-            uint32_t rip = peer_table[peerid].rip;  //real ip is stored in network byte order.
+            uint32_t rip = peer_table[peerid]->rip;  //real ip is stored in network byte order.
             ip_dnat(buf_load, rip);
 
             //encrypt and send to client
-            memcpy(peeraddr, peer_table[peerid].peeraddr, sizeof(struct sockaddr_in));
+            memcpy(peeraddr, peer_table[peerid]->peeraddr, sizeof(struct sockaddr_in));
         
             header_send.id = htons(global_self_id);
             header_send.m_type_len = 0;
@@ -1091,9 +1129,9 @@ void* server_recv(void *arg)
             header_send.padding = random();
     
             if(peerid > global_self_id)
-                buf_psk = peer_table[peerid].psk;
+                buf_psk = peer_table[peerid]->psk;
             else
-                buf_psk = peer_table[0].psk;
+                buf_psk = peer_table[global_self_id]->psk;
             memcpy(buf_header, &header_send, HEADER_LEN);
             encrypt(buf_send, buf_header, global_buf_group_psk, AES_KEY_LEN);  //encrypt header with group PSK
             encrypt(&buf_send[HEADER_LEN], buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
@@ -1105,20 +1143,18 @@ void* server_recv(void *arg)
             int len_pad = (len_load > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
             if(sendto(global_sockfd, buf_send, HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN + len_pad, \
                 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
-                perror("sendto error");
+                printlog(errno, "tunif %s sendto socket error", global_tunif.name);
             continue;
         }
 
         //daddr is NOT 127.x.x.x
         else
         {
-            if(peerid > MAX_SERVER_ID)
-                memcpy(peer_table[peerid].peeraddr, peeraddr, sizeof(struct sockaddr_in));    //save client's outer UDP socket.
-            peer_table[peerid].rip = ip_h.saddr;  //save client's inner real saddr in network byte order.
+            peer_table[peerid]->rip = ip_h.saddr;  //save client's inner real saddr in network byte order.
     
-            next_id = get_next_hop_id(ip_h.daddr, peer_table[peerid].vip);
-            //printf("in recv: dest: %d\n", next_id);
-            //printf("global_self_id: %d\n", global_self_id);
+            next_id = get_next_hop_id(ip_h.daddr, peer_table[peerid]->vip);
+            //printlog(0, "in recv: dest: %d\n", next_id);
+            //printlog(0, "global_self_id: %d\n", global_self_id);
     
             if(1 == next_id || global_self_id == next_id)   //write to local tunnel
             {
@@ -1128,16 +1164,16 @@ void* server_recv(void *arg)
                 }
                 else   //not send to local tunif
                 {
-                    uint32_t vip = peer_table[peerid].vip;     //apply snat, saddr is peer's vip
+                    uint32_t vip = peer_table[peerid]->vip;     //apply snat, saddr is peer's vip
                     ip_snat(buf_load, vip);
                 }
                 
                 if(write(global_tunfd, &buf_load, len_load) < 0)
-                    perror("write error");
+                    printlog(errno, "tunif %s write error", global_tunif.name);
             }
             else if(0 != next_id)     //switch to another server
             {
-                uint32_t vip = peer_table[peerid].inter_vip;     //apply snat, saddr is 127.255.x.x
+                uint32_t vip = peer_table[peerid]->inter_vip;     //apply snat, saddr is 127.255.x.x
                 if(127 == ip_saddr.a)
                 {
                     ip_saddr.b--;   //decrease TTL
@@ -1148,9 +1184,9 @@ void* server_recv(void *arg)
     
                 struct tunnel_header header_send;
                 if(next_id > global_self_id)
-                    buf_psk = peer_table[next_id].psk;
+                    buf_psk = peer_table[next_id]->psk;
                 else
-                    buf_psk = peer_table[0].psk;
+                    buf_psk = peer_table[global_self_id]->psk;
                 header_send.id = htons(global_self_id);
                 byte buf_send[ETH_MTU];
                 header_send.m_type_len = 0;
@@ -1169,11 +1205,11 @@ void* server_recv(void *arg)
                 for(i=0; i<nr_aes_block; i++)
                     encrypt(&buf_send[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], &buf_load[i*AES_TEXT_LEN], buf_psk, AES_KEY_LEN);
         
-                //printf("sendto: %d\n", next_id);
+                //printlog(0, "sendto: %d\n", next_id);
                 int len_pad = (len_load > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
                 if(sendto(global_sockfd, buf_send, HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN + len_pad, \
-                    0, (struct sockaddr *)peer_table[next_id].peeraddr, sizeof(*peeraddr)) < 0 )
-                    perror("sendto error");
+                    0, (struct sockaddr *)peer_table[next_id]->peeraddr, sizeof(*peeraddr)) < 0 )
+                    printlog(errno, "tunif %s sendto socket error", global_tunif.name);
             }
         }
     }

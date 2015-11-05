@@ -16,7 +16,11 @@ FAQ
      iptables -t nat -A POSTROUTING -s 10.5.5.0/24 -o eth0 -j MASQUERADE;
      iptables -t nat -A POSTROUTING -s 10.5.5.0/24 -o eth0 -j SNAT --to-source 10.0.2.15
 
+#### 2. why ip rule/route don't work?
 
+  A: must change ip rule first, then change ip route. therwise, the route cache won't flushed.
+     because i can't find a way to receive notification from linux kernel when ip rule changes.
+     anybody knows please tell me :)
 
 DESIGN
 ------

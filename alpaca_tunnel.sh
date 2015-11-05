@@ -24,6 +24,8 @@ elif [ $CUR_DIR == "/usr/bin" ];then
 fi
 
 CONF_FILE=$CONF_PATH/alpaca_tunnel.conf
+SECRET_FILE=$CONF_PATH/alpaca_tunnel.d/alpaca_secrets
+
 if [ -r $CONF_FILE ]; then
     source $CONF_FILE
 else
@@ -31,9 +33,13 @@ else
     exit 1
 fi
 
-KEY_MD5=`echo $SELF_KEY | md5sum | awk '{ printf $1 }'`
+if [ ! -r $SECRET_FILE ]; then
+    echo "secret file not available!"
+    exit 1
+fi
+
 TUN_IP=10.$NETID.$SELF_ID
-TUN_GW=10.$NETID.0.1
+TUN_GW=10.$NETID.$GW_ID
 TUNIF=$TUN_PREFIX$TUN_INDEX
 BACKUP_PREFIX=running_backup_
 BACKUP_PATH=/tmp/running_backup_$TUNIF
@@ -53,7 +59,7 @@ check_tun_name()
 {
     [ -z $1 ] && return 0
     local tunif=$1
-    ifconfig -a | grep $tunif > /dev/null
+    ifconfig -a | grep -q $tunif
     if [ $? == 0 ]; then
         for ifname in `ifconfig -a | grep $tunif | awk '{print $1}'`; do 
             [ $tunif == $ifname ] && return 1   #there is a same tun
@@ -143,22 +149,6 @@ kill_tunnel()
     local tun_kill=$1
     pid=`ps ax | grep $EXE_NAME | awk /-i\ $tun_kill$/ | awk '{print $1}'`
 
-    if [ $MODE == server ] || [ $MODE == middle_server ]; then
-        ps $pid | grep -v grep | grep $EXE_NAME | grep -e "-c" > /dev/null
-        if [ $? == 0 ]; then
-            echo "mode doesn't match, process is in client mode!"
-            return 1
-        fi
-    fi
-    
-    if [ $MODE == client ] || [ $MODE == middle_client ]; then
-        ps $pid | grep -v grep | grep $EXE_NAME | grep -e "-s" > /dev/null
-        if [ $? == 0 ]; then
-            echo "mode doesn't match, process is in server mode!"
-            return 1
-        fi
-    fi
-
     if [ x$pid == x"" ]; then
         echo "cann't find pid of tunnel $tun_kill, nothing to kill!"
         return 0
@@ -213,32 +203,6 @@ serverup()
     gwmtu=$((gwmtu-HEADER_LEN))
     TUN_MTU=$((gwmtu<TUN_MTU?gwmtu:TUN_MTU))
 
-    if [ middle_server == $MODE ]; then
-        search_instance client > /dev/null
-        if [ $? == 0 ]; then
-            echo "Warning: no client instance running, run the following command after start the client:"
-            echo "#-------Beginning of command-------"
-            echo "iptables -t nat -A POSTROUTING -s $TUN_IP/$TUN_MASK -o \$client_tunif -j SNAT --to-source \$client_tunip"
-        else
-            echo "please run the following command manually:"
-            echo "#-------Beginning of command-------"
-            tunlist=`ifconfig | grep $TUN_PREFIX | awk '{print $1}'`
-            for tunif in $tunlist; do
-                ps -ef | grep $tunif | grep -v grep | grep -e "-c" > /dev/null
-                if [ $? == 0 ]; then   #client
-                    tunip=`ip addr show $tunif | grep inet | awk '{print $2}' | awk -F/ '{print $1}'`
-                    gwmtu=`ifconfig $tunif | grep MTU | sed -e 's/.*MTU:\([^ ]*\).*/\1/'`
-                    TUN_MTU=$((gwmtu<TUN_MTU?gwmtu:TUN_MTU))
-                    echo "iptables -t nat -A POSTROUTING -s $TUN_IP/$TUN_MASK -o $tunif -j SNAT --to-source $tunip"
-                fi
-            done
-        fi
-        echo "ip rule add from $TUN_IP/$TUN_MASK table xxx"
-        echo "ip route add default dev \$client_tunif table xxx"
-        echo "chnroute.sh add"
-        echo "#---------End of command--------"
-    fi
-
     ip tuntap add dev $TUNIF mode tun
     if [ $? != 0 ]; then
         echo "creat $TUNIF failed, nothing to do!"
@@ -253,21 +217,20 @@ serverup()
     iptables -A FORWARD -p tcp --syn -s $TUN_IP/$TUN_MASK -j TCPMSS --set-mss $TCPMSS
 
     #TUNIF must be put at the end of the line.
-    nohup $EXE_PATH/$EXE_NAME -s -p $SERVER_PORT -k $KEY_MD5 -g $GROUP -n $SELF_ID -i $TUNIF >> $LOGFILE &
+    stdbuf -i0 -o0 -e0 nohup $EXE_PATH/$EXE_NAME -p $PORT -g $GROUP -n $SELF_ID -i $TUNIF | tee -a $LOGFILE &
     sleep 0.2
     ps aux | grep $! | grep -v grep > /dev/null
     if [ $? == 0 ]; then
         cp -f $0 $BACKUP_SCRIPT > /dev/null
         cp -f $CONF_FILE $BACKUP_CONF > /dev/null
-        ifconfig $TUNIF | grep inet | awk '{print $2"\t"$NF}'
-        echo "server's tunnel MTU is: $TUN_MTU."
-        echo "$EXE_NAME started on port $SERVER_PORT with $TUNIF."
+        ifconfig $TUNIF | grep inet | awk '{print $2}' | awk -F: '{print "tunnel IP : "$2}'
+        echo "tunnel MTU: $TUN_MTU"
+        echo "$EXE_NAME started on port $PORT with $TUNIF."
         return 0
     else
         iptables -t nat -D POSTROUTING -s $TUN_IP/$TUN_MASK -o $default_gw_dev -j MASQUERADE
         iptables -D FORWARD -p tcp --syn -s $TUN_IP/$TUN_MASK -j TCPMSS --set-mss $TCPMSS
         ip tuntap del dev $TUNIF mode tun
-        cat $LOGFILE | tail -n 1
         echo "$EXE_NAME failed to start with $TUNIF!"
         return 1
     fi
@@ -303,30 +266,12 @@ serverdown()
     fi
     rm -rf $BACKUP_PATH > /dev/null
     echo "$EXE_NAME exited with $TUNIF."
-    if [ middle_server == $MODE ]; then
-        echo "check the iptables & ip rules and delete the following if needed:"
-        echo "#-------Beginning of command-------"
-        echo "iptables -t nat -D POSTROUTING -s $TUN_IP/$TUN_MASK -o \$client_tunif -j SNAT --to-source \$client_tunip"
-        echo "ip rule del from $TUN_IP/$TUN_MASK table xxx"
-        echo "ip route del default dev \$client_tunif table xxx"
-        echo "chnroute.sh del"
-        echo "#---------End of command--------"
-    fi
+    
     return 0
 }
 
 clientup()
 {
-    check_ip_format $SERVER_ADDR
-    if [ $? != 0 ]; then
-        ip=`nslookup $SERVER_ADDR`
-        if [ $? != 0 ]; then
-            echo "server name lookup failed, check your server address."
-            return 1
-        fi
-        SERVER_ADDR=`echo $ip | awk '{print $NF}'`
-    fi
-
     check_tun_name $TUNIF
     if [ $? != 0 ]; then
         echo "$TUNIF already exists, nothing to do!"
@@ -349,21 +294,26 @@ clientup()
     done
 
     iplist=`ip addr show | grep inet | awk '{print $2}' | awk -F/ '{print $1}'`
-    for ip in $iplist; do
-        if [ $SERVER_ADDR == $ip ]; then
-            echo "check if this is server, don't run client on a server!"
-            return 1
-        fi
+    server_list=`cat $SECRET_FILE | sed -r "s/^\s+//g" | grep -v -e "^#" | awk '{print $3}' | grep -v -e "^$"`
+    for server in $server_list; do
+        for ip in $iplist; do
+            if [ $server == $ip ]; then
+                echo "check if this is server, don't run client on a server!"
+                #return 1
+            fi
+        done
     done
 
-    server_gw_dev=`ip route get $SERVER_ADDR | grep dev | sed -e 's/.*dev \([^ ]*\).*/\1/'`
-    if [ x$server_gw_dev == x"" ]; then
-        echo "no route to server, nothing to do!"
-        return 1
-    fi
-    gwmtu=`ifconfig $server_gw_dev | grep MTU | sed -e 's/.*MTU:\([^ ]*\).*/\1/'`
-    gwmtu=$((gwmtu-HEADER_LEN))
-    TUN_MTU=$((gwmtu<TUN_MTU?gwmtu:TUN_MTU))
+    for server in $server_list; do
+        server_gw_dev=`ip route get $server | grep dev | sed -e 's/.*dev \([^ ]*\).*/\1/'`
+        if [ x$server_gw_dev == x"" ]; then
+            echo "no route to server, nothing to do!"
+            return 1
+        fi
+        gwmtu=`ifconfig $server_gw_dev | grep MTU | sed -e 's/.*MTU:\([^ ]*\).*/\1/'`
+        gwmtu=$((gwmtu-HEADER_LEN))
+        TUN_MTU=$((gwmtu<TUN_MTU?gwmtu:TUN_MTU))
+    done
 
     ip tuntap add dev $TUNIF mode tun
     if [ $? != 0 ]; then
@@ -374,39 +324,38 @@ clientup()
     ip link set $TUNIF mtu $TUN_MTU
     ip addr add $TUN_IP/$TUN_MASK dev $TUNIF
 
-    if [ client == $MODE ]; then
-        default_gw_ip=`ip route show | grep '^default' | sed -e 's/.*via \([^ ]*\).*/\1/'`
-        if check_ip_format $default_gw_ip; then
-            echo $default_gw_ip > $BACKUP_GW_IP
-        else
-            echo "****!!! no default route found in routing table !!!****"
-        fi
-
-        default_gw_ip=`cat $BACKUP_GW_IP`
-        check_ip_format $default_gw_ip
-        if [ $? != 0 ]; then 
-            echo "******!!!!!! default route lost !!!!!!******"
-        fi
- 
-        ip route del default #table main
-        #ip route add default dev $TUNIF table default
-        ip route add default via $TUN_GW table default
-        ip route add $SERVER_ADDR/32 via $default_gw_ip table default
-        ip route add $DNS_ADDR_LOCAL/32 via $default_gw_ip table default
+    default_gw_ip=`ip route show | grep '^default' | sed -e 's/.*via \([^ ]*\).*/\1/'`
+    if check_ip_format $default_gw_ip; then
+        echo $default_gw_ip > $BACKUP_GW_IP
+    else
+        echo "****!!! no default route found in routing table !!!****"
+    fi
+    default_gw_ip=`cat $BACKUP_GW_IP`
+    check_ip_format $default_gw_ip
+    if [ $? != 0 ]; then 
+        echo "******!!!!!! default route lost !!!!!!******"
     fi
 
-    nohup $EXE_PATH/$EXE_NAME -k $KEY_MD5 -g $GROUP -n $SELF_ID -c $SERVER_ADDR -p $SERVER_PORT -i $TUNIF  >> $LOGFILE &
+    ip route del default #table main
+    #ip route add default dev $TUNIF table default
+    ip route add default via $TUN_GW table default
+    for server in $server_list; do
+        ip route add $server/32 via $default_gw_ip table default
+    done
+    ip route add $DNS_ADDR_LOCAL/32 via $default_gw_ip table default
+
+    #TUNIF must be put at the end of the line.
+    stdbuf -i0 -o0 -e0 nohup $EXE_PATH/$EXE_NAME -p $PORT -g $GROUP -n $SELF_ID -i $TUNIF | tee -a $LOGFILE &
     sleep 0.1
     ps aux | grep $! | grep -v grep > /dev/null
     if [ $? == 0 ]; then
         cp -f $0 $BACKUP_SCRIPT > /dev/null
         cp -f $CONF_FILE $BACKUP_CONF > /dev/null
-        ifconfig $TUNIF | grep inet | awk '{print $2"\t"$NF}'
-        echo "client's tunnel MTU is: $TUN_MTU."
-        echo "$EXE_NAME started with $TUNIF. connecting to $SERVER_ADDR:$SERVER_PORT"
+        ifconfig $TUNIF | grep inet | awk '{print $2}' | awk -F: '{print "tunnel IP : "$2}'
+        echo "tunnel MTU: $TUN_MTU"
+        echo "$EXE_NAME started with $TUNIF. Default routing to $TUN_GW"
         return 0
     else
-        cat $LOGFILE | tail -n 1
         clientdown
         echo "$EXE_NAME failed to start with $TUNIF!"
         return 1
@@ -416,25 +365,22 @@ clientup()
 clientdown()
 {
     iplist=`ip addr show | grep inet | awk '{print $2}' | awk -F/ '{print $1}'`
-    for ipadd in $iplist; do
-        if [ $SERVER_ADDR == $ipadd ]; then
-            echo "this is server, nothing to do!"
-            return 0
-        fi
+    server_list=`cat $SECRET_FILE | sed -r "s/^\s+//g" | grep -v -e "^#" | awk '{print $3}' | grep -v -e "^$"`
+    
+    for server in $server_list; do
+        for ip in $iplist; do
+            if [ $server == $ip ]; then
+                #echo "this is server, nothing to do!"
+                echo "check if this is server, don't run client on a server!"
+                #return 0
+            fi
+        done
     done
 
     check_tun_name $TUNIF
     if [ $? == 0 ]; then
         echo "no $TUNIF anymore, nothing to do!"
         return 0
-    fi
-
-    check_ip_format $SERVER_ADDR
-    if [ $? != 0 ]; then
-        SERVER_ADDR=`ps aux | grep $TUNIF | grep -v grep | sed -e 's/.*-c \([^ ]*\).*/\1/'`
-        if [ x$SERVER_ADDR == x"" ]; then
-            echo "server address not valid, you may need to delete route manually."
-        fi
     fi
 
     search_instance client
@@ -448,18 +394,17 @@ clientdown()
         fi
     fi
 
-    if [ client == $MODE ]; then
-        default_gw_ip=`cat $BACKUP_GW_IP`
-        check_ip_format $default_gw_ip
-        if [ $? != 0 ]; then 
-            echo "******!!!!!! default route lost !!!!!!******"
-        fi
-
-        ip route del default table default
-        ip route del $SERVER_ADDR/32 table default
-        ip route del $DNS_ADDR_LOCAL/32 table default
-        ip route add default via $default_gw_ip
+    default_gw_ip=`cat $BACKUP_GW_IP`
+    check_ip_format $default_gw_ip
+    if [ $? != 0 ]; then 
+        echo "******!!!!!! default route lost !!!!!!******"
     fi
+    ip route del default table default
+    for server in $server_list; do
+        ip route del $server/32 table default
+    done
+    ip route del $DNS_ADDR_LOCAL/32 table default
+    ip route add default via $default_gw_ip
 
     ip tuntap del dev $TUNIF mode tun
     if [ $? != 0 ]; then
@@ -475,62 +420,42 @@ clientdown()
 search_instance()
 {
     local mode=$1
-    servernr=`ps aux | grep $TUN_PREFIX | grep -v grep | grep -v $BACKUP_PREFIX | grep -e "-s" | wc -l`
-    clientnr=`ps aux | grep $TUN_PREFIX | grep -v grep | grep -v $BACKUP_PREFIX | grep -e "-c" | wc -l`
+    tunnr=`ps aux | grep $TUN_PREFIX | grep -v grep | grep -v $BACKUP_PREFIX | wc -l`
 
-    tunnr=$((servernr+clientnr))
     if [ $tunnr == 0 ]; then
         echo "no instance running!"
         return $tunnr
     fi
-
-    echo "there are $servernr servers and $clientnr clients running!"
+    echo "Total running instance: $tunnr"
 
     tunlist=`ifconfig | grep $TUN_PREFIX | awk '{print $1}'`
-    if [ x$mode != xclient ]; then
-        for tunif in $tunlist; do
-            listenport=`ps -ef | grep $tunif | grep -v $BACKUP_PREFIX | grep -v grep | sed -e 's/.*-p \([^ ]*\).*/\1/'`
-            ps -ef | grep $tunif | grep -v grep | grep -v $BACKUP_PREFIX | grep -e "-s" > /dev/null
-            if [ $? == 0 ]; then
-                #there's something wrong...why executed when nothing found? and \t should be replaced.
-                printf "%s\t%s\t\t%s\t%s\n" $tunif `ifconfig $tunif | grep inet | \
-                awk '{print $2" "$4}'` "listening on $listenport"
-            fi
-        done
-    fi
-
-    if [ x$mode != xserver ]; then
-        for tunif in $tunlist; do
-            serveraddr=`ps -ef | grep $tunif | grep -v $BACKUP_PREFIX | grep -v grep | sed -e 's/.*-c \([^ ]*\).*/\1/'`
-            serverport=`ps -ef | grep $tunif | grep -v $BACKUP_PREFIX | grep -v grep | sed -e 's/.*-p \([^ ]*\).*/\1/'`
-            ps -ef | grep $tunif | grep -v grep | grep -v $BACKUP_PREFIX | grep -e "-c" > /dev/null
-            if [ $? == 0 ]; then
-                printf "%s\t%s\t\t%s\t%s\n" $tunif `ifconfig $tunif | grep inet | \
-                awk '{print $2" "$4}'` "connecting to $serveraddr:$serverport"
-            fi
-        done
-    fi
-
-    [ x$mode == xserver ] && return $servernr
-    [ x$mode == xclient ] && return $clientnr
-
+    
+    for tunif in $tunlist; do
+        pid=`ps aux | grep $tunif | grep -v grep | awk '{print $2}'`
+        port=`netstat -anup | grep $EXE_NAME | grep $pid | awk '{print $4}' | awk -F: '{print $2}'`
+        ps -ef | grep -v grep | grep -v $BACKUP_PREFIX | grep -q $tunif
+        if [ $? == 0 ]; then
+            printf "%s\t\t%s\t\t%s\n" $tunif `ifconfig $tunif | grep inet | awk '{print $2}'` "port:$port"
+        fi
+    done
+    
     return $tunnr
 }
 
 
 case $1 in
 start|u|up) 
-    if [ $MODE == client ] || [ $MODE == middle_client ]; then
+    if [ $MODE == client ]; then
         clientup
-    elif [ $MODE == server ] || [ $MODE == middle_server ]; then
+    elif [ $MODE == server ]; then
         serverup
     else
         echo "wrong MODE! check your configuration."
     fi ;;
 stop|d|do|dow|down)
-    if [ $MODE == client ] || [ $MODE == middle_client ]; then
+    if [ $MODE == client ]; then
         clientdown
-    elif [ $MODE == server ] || [ $MODE == middle_server ]; then
+    elif [ $MODE == server ]; then
         serverdown
     else
         echo "wrong MODE! check your configuration."
