@@ -38,6 +38,22 @@ if [ ! -r $SECRET_FILE ]; then
     exit 1
 fi
 
+if [ ! "$($EXE_PATH/$EXE_NAME)" ]; then
+    echo "ELF file $EXE_NAME not available! Please make it first."
+    exit 1
+fi
+
+if [ ! "$(bc --version)" ]; then
+    echo "The programm bc is not available! Please install it first."
+    exit 1
+fi
+
+if [ ! "$(ip addr)" ]; then
+    echo "The programm ip is not available! Please install it first."
+    exit 1
+fi
+
+
 TUN_IP=10.$NETID.$SELF_ID
 TUN_GW=10.$NETID.$GW_ID
 TUNIF=$TUN_PREFIX$TUN_INDEX

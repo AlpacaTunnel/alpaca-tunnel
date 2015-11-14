@@ -18,9 +18,9 @@ FAQ
 
 #### 2. why ip rule/route don't work?
 
-  A: must change ip rule first, then change ip route. therwise, the route cache won't flushed.
-     because i can't find a way to receive notification from linux kernel when ip rule changes.
-     anybody knows please tell me :)
+  A: try to change it again.
+     Does anyone knows how to receive notification from linux kernel when IPv6 rule changes?
+     There is RTMGRP_IPV4_RULE, but it seems that there is no RTMGRP_IPV6_RULE.
 
 DESIGN
 ------

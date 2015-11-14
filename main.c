@@ -148,24 +148,32 @@ int ip_snat(byte* ip_load, uint32_t new_ip);
 int16_t inet_ptons(char *a);   //convert 15.255 to 4095
 int shrink_line(char *line);
 
+/* get next hop id form route_table or system route table
+ * return value:
+ * 1 : local or link dst, should write to tunnel interface
+ * >1: the ID of other tunnel server
+*/
+uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src);
+
+
 static int global_running = 0;
 static int global_sysroute_change = 0;
 static uint16_t global_self_id = 0;
 
 //in network byte order.
-struct if_info global_tunif;
-uint16_t global_offset_ipv4_fragoff;
-uint32_t global_inter_switch_net;
-uint32_t global_between_tun_net;
-int global_packet_cnt_write = 0;
-int global_packet_cnt_send = 0;
+static struct if_info global_tunif;
+static struct if_info *global_if_list;
+static uint16_t global_offset_ipv4_fragoff;
+static uint32_t global_inter_switch_net;
+static uint32_t global_between_tun_net;
 
-enum {none, server, client, middle} global_mode = none;
-byte global_buf_group_psk[2*AES_TEXT_LEN] = "FUCKnimadeGFW!";
-int global_tunfd, global_sockfd;
-extern struct if_info *global_if_list;
+//static int global_packet_cnt_write = 0;
+//static int global_packet_cnt_send = 0;
 
-pthread_spinlock_t route_spin;
+//enum {none, server, client, middle} global_mode = none;
+static byte global_buf_group_psk[2*AES_TEXT_LEN] = "FUCKnimadeGFW!";
+static int global_tunfd, global_sockfd;
+
 
 int usage(char *pname)
 {
@@ -175,45 +183,7 @@ int usage(char *pname)
 
 int main(int argc, char *argv[])
 {
-    /*    
-    for(int ii=1; ii<RT_TB_SIZE+1; ii++)
-        add_route(ii,ii,ii);
-    
-    int nid = get_route(123, 123);
-    printf("%d\n", nid);
-    struct sockaddr_in t1, t2;
-    inet_pton(AF_INET, argv[1], &t1.sin_addr);
-    inet_pton(AF_INET, argv[2], &t2.sin_addr);
-
-    //reset_link();
-    extern struct if_info *global_if_list;
-    
-    collect_if_info(&global_if_list);
-    clear_if_info(global_if_list);
-    global_if_list = NULL;
-
-    collect_if_info(&global_if_list);
-
-    int if2 = get_ipiif(t2.sin_addr.s_addr);
-    int i1 = get_sys_iproute(t1.sin_addr.s_addr, t2.sin_addr.s_addr, if2);
-    struct timeval stop, start;
-
-    gettimeofday(&start, NULL);
-    int n3 = get_next_hop_id(t1.sin_addr.s_addr, t2.sin_addr.s_addr);
-    gettimeofday(&stop, NULL);
-
-    printf("i1: %d\n", i1);
-    printf("if2: %d\n", if2);
-    printf("n3: %d\n", n3);
-
-    printf("took %lu\n", stop.tv_sec - start.tv_sec);
-    printf("took %lu\n", stop.tv_usec - start.tv_usec);
-    */
-
-    //printf("sizeof packet_profile: %d\n", sizeof(struct packet_profile));
-    //printlog(0, "%d %d\n", 1, 2);
-    //printlog(2, "%s %s", "a", "b");
-    pthread_spin_init(&route_spin, PTHREAD_PROCESS_PRIVATE);
+    init_route_spin();
     global_if_list = NULL;
     collect_if_info(&global_if_list);
     global_offset_ipv4_fragoff = htons(OFFSET_IPV4_FRAGOFF);
@@ -301,7 +271,7 @@ int main(int argc, char *argv[])
     }
     struct sockaddr_in *tmp_in = (struct sockaddr_in *)&tmp_ifr.ifr_addr;
     global_tunif.addr = tmp_in->sin_addr.s_addr;
-    global_tunif.mask = get_ipmask(global_tunif.addr);
+    global_tunif.mask = get_ipmask(global_tunif.addr, global_if_list);
     if(TUN_NETMASK != ntohl(global_tunif.mask))
     {
         printlog(0, "error: tunnel mask is not /16\n");
@@ -405,9 +375,11 @@ int main(int argc, char *argv[])
     //pthread_join(tid3, NULL);
 _END:
     global_running = 0;
-    pthread_spin_destroy(&route_spin);
     close(global_sockfd);
     close(global_tunfd);
+    clear_if_info(global_if_list);
+    global_if_list = NULL;
+    destroy_route_spin();
     free_peer(peer_table);
     peer_table = NULL;
     //free(peer_table);
@@ -769,6 +741,23 @@ int ip_snat(byte* ip_load, uint32_t new_ip)
     return 0;
 }
 
+uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src)
+{
+    uint16_t next_hop_id;
+    next_hop_id = get_route(ip_dst, ip_src);
+    if(0 == next_hop_id)
+    {
+        uint32_t next_hop_ip = get_sys_iproute(ip_dst, ip_src, global_if_list);
+        //if((next_hop_ip > 0) && (((next_hop_ip ^ global_tunif.h) & 0xFFFF0000) == 0x0))
+        if((next_hop_ip & global_tunif.mask) == (global_tunif.addr & global_tunif.mask))
+            next_hop_id = (uint16_t)ntohl(next_hop_ip);
+        else
+            next_hop_id = 1;  //this limits the use of ID 0.1, 0.1 cann't be used by any server/client, it always indicates local.
+        add_route(next_hop_id, ip_dst, ip_src);
+    }
+    return next_hop_id;
+}
+
 void* client_read(void *arg)
 {
     struct tunnel_header header_send;
@@ -889,8 +878,15 @@ void* watch_link_route(void *arg)
     bzero(&rth.local, sizeof(rth.local));
     rth.local.nl_family = AF_NETLINK;
     rth.local.nl_pid = getpid()+1;
-    rth.local.nl_groups = RTMGRP_IPV4_ROUTE | RTMGRP_NOTIFY;
-    bind(rth.fd, (struct sockaddr*) &rth.local, sizeof(rth.local));
+    rth.local.nl_groups = RTMGRP_IPV4_ROUTE | RTMGRP_IPV4_RULE | RTMGRP_IPV4_IFADDR | 
+        RTMGRP_IPV6_ROUTE | RTMGRP_IPV6_IFADDR | 
+        RTMGRP_NOTIFY;
+    if(bind(rth.fd, (struct sockaddr*) &rth.local, sizeof(rth.local)) < 0)
+    {
+        printlog(errno, "rtnl_handle bind error");
+        global_running = 0;
+    }
+
     while(global_running)
         if(recv(rth.fd, buf, sizeof(buf), 0) )
             global_sysroute_change++;
@@ -907,12 +903,21 @@ void* reset_link_route(void *arg)
         sleep(1);
         if(pre != global_sysroute_change)
         {
-            clear_if_info(global_if_list);
-            global_if_list = NULL;
-            collect_if_info(&global_if_list);
-            //must clear if_info first
-            clear_route();
             printlog(0, "RTNETLINK: route changed!\n");
+
+            if(clear_if_info(global_if_list) != 0)
+                continue;
+            else
+                global_if_list = NULL;
+
+            if(collect_if_info(&global_if_list) != 0)
+                continue;
+
+            //must clear if_info first, then clear_route
+            if(clear_route() != 0)
+                continue;
+
+            printlog(0, "RTNETLINK: route table reset!\n");
             pre = global_sysroute_change;
         }
     }

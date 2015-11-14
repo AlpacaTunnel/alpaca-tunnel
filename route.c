@@ -15,19 +15,48 @@
 
 #define NLMSG_TAIL(nmsg) ((struct rtattr *) (((void *) (nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))
 
-extern pthread_spinlock_t route_spin;
+static pthread_spinlock_t route_spin;
+static int route_spin_inited = 0;
 
-//global_rt_tb_index points to the latest route_item
-static int global_rt_tb_index = 0;
-extern struct if_info global_tunif;
+//rt_tb_index points to the latest route_item
+static int rt_tb_index = 0;
+static struct route_item route_table[RT_TB_SIZE];
 
-struct if_info *global_if_list;
-struct route_item route_table[RT_TB_SIZE];
+int init_route_spin()
+{
+    if(0 == route_spin_inited)
+    {
+        if(pthread_spin_init(&route_spin, PTHREAD_PROCESS_PRIVATE) != 0)
+        {
+            perror("pthread_spin_init");
+            return -1;
+        }
+        route_spin_inited = 1;
+    }
+    return 0;
+}
 
+int destroy_route_spin()
+{
+    if(1 == route_spin_inited)
+    {
+        if(pthread_spin_destroy(&route_spin) != 0)
+        {
+            perror("pthread_spin_destroy");
+            return -1;
+        }
+        route_spin_inited = 0;
+    }
+    return 0;
+}
 
 int clear_route()
 {
-    pthread_spin_lock(&route_spin);
+    if(pthread_spin_lock(&route_spin) != 0)
+    {
+        perror("pthread_spin_lock");
+        return -1;
+    }
 
     int i = 0;
     for(i = 0; i < RT_TB_SIZE; i++)
@@ -36,23 +65,35 @@ int clear_route()
         route_table[i].ip_dst = 0;
         route_table[i].ip_src = 0;
     }
-    global_rt_tb_index = 0;
+    rt_tb_index = 0;
     
-    pthread_spin_unlock(&route_spin);
+    if(pthread_spin_unlock(&route_spin) != 0)
+    {
+        perror("pthread_spin_unlock");
+        return -1;
+    }
 
     return 0;
 }
 
 int add_route(uint16_t next_hop_id, uint32_t ip_dst, uint32_t ip_src)
 {
-    pthread_spin_lock(&route_spin);
+    if(pthread_spin_lock(&route_spin) != 0)
+    {
+        perror("pthread_spin_lock");
+        return -1;
+    }
 
-    global_rt_tb_index = (global_rt_tb_index + 1) % RT_TB_SIZE;
-    route_table[global_rt_tb_index].next_hop_id = next_hop_id;
-    route_table[global_rt_tb_index].ip_dst = ip_dst;
-    route_table[global_rt_tb_index].ip_src = ip_src;
+    rt_tb_index = (rt_tb_index + 1) % RT_TB_SIZE;
+    route_table[rt_tb_index].next_hop_id = next_hop_id;
+    route_table[rt_tb_index].ip_dst = ip_dst;
+    route_table[rt_tb_index].ip_src = ip_src;
 
-    pthread_spin_unlock(&route_spin);
+    if(pthread_spin_unlock(&route_spin) != 0)
+    {
+        perror("pthread_spin_unlock");
+        return -1;
+    }
 
     return 0;
 }
@@ -63,7 +104,7 @@ uint16_t get_route(uint32_t ip_dst, uint32_t ip_src)
     //gettimeofday(&start, NULL);
 
     int i;
-    for(i = global_rt_tb_index; i != (global_rt_tb_index+1) % RT_TB_SIZE; i = (i-1+RT_TB_SIZE) % RT_TB_SIZE)
+    for(i = rt_tb_index; i != (rt_tb_index+1) % RT_TB_SIZE; i = (i-1+RT_TB_SIZE) % RT_TB_SIZE)
         if(ip_dst == route_table[i].ip_dst && ip_src == route_table[i].ip_src)
             return route_table[i].next_hop_id;
         
@@ -75,9 +116,9 @@ uint16_t get_route(uint32_t ip_dst, uint32_t ip_src)
     return 0;
 }
 
-int get_ipif_local(uint32_t ip)
+int get_ipif_local(uint32_t ip, struct if_info *if_list)
 {
-    struct if_info *p = global_if_list;
+    struct if_info *p = if_list;
     while(p)
     {
         if(p->addr == ip)
@@ -88,9 +129,9 @@ int get_ipif_local(uint32_t ip)
     return 0;
 }
 
-int get_ipiif(uint32_t ip)
+int get_ipiif(uint32_t ip, struct if_info *if_list)
 {
-    struct if_info *p = global_if_list;
+    struct if_info *p = if_list;
     while(p)
     {
         if(p->ptp == ip)
@@ -103,9 +144,9 @@ int get_ipiif(uint32_t ip)
     return 0;
 }
 
-uint32_t get_ipmask(uint32_t ip)
+uint32_t get_ipmask(uint32_t ip, struct if_info *if_list)
 {
-    struct if_info *p = global_if_list;
+    struct if_info *p = if_list;
     while(p)
     {
         if(p->ptp == ip)
@@ -120,7 +161,14 @@ uint32_t get_ipmask(uint32_t ip)
 
 int clear_if_info(struct if_info *info)
 {
-    pthread_spin_lock(&route_spin);
+    if(NULL == info)
+        return 0;
+    
+    if(pthread_spin_lock(&route_spin) != 0)
+    {
+        perror("pthread_spin_lock");
+        return -1;
+    }
 
     struct if_info *p;
     while(info)
@@ -130,14 +178,22 @@ int clear_if_info(struct if_info *info)
         free(p);
     }
 
-    pthread_spin_unlock(&route_spin);
+    if(pthread_spin_unlock(&route_spin) != 0)
+    {
+        perror("pthread_spin_unlock");
+        return -1;
+    }
 
     return 0;
 }
 
 int collect_if_info(struct if_info **first)
 {
-    pthread_spin_lock(&route_spin);
+    if(pthread_spin_lock(&route_spin) != 0)
+    {
+        perror("pthread_spin_lock");
+        return -1;
+    }
 
     struct ifaddrs *ifaddr, *ifa;
     if(getifaddrs(&ifaddr) == -1) 
@@ -188,12 +244,16 @@ int collect_if_info(struct if_info **first)
 
     freeifaddrs(ifaddr);
 
-    pthread_spin_unlock(&route_spin);
+    if(pthread_spin_unlock(&route_spin) != 0)
+    {
+        perror("pthread_spin_unlock");
+        return -1;
+    }
 
     return 0;
 }
 
-uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, int iif_index)
+uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, struct if_info *if_list)
 {
     //ip rou get 4.4.4.4 from 10.7.0.2 iif ppptun2
     //ip_dst & ip_src are in network byte order
@@ -202,7 +262,7 @@ uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, int iif_index)
         return 0;
 
     //link or local
-    if(get_ipiif(ip_dst))
+    if(get_ipiif(ip_dst, if_list))
         return ip_dst;
 
     // buffer to hold the RTNETLINK request
@@ -254,12 +314,13 @@ uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, int iif_index)
     rt_req.nl.nlmsg_len = NLMSG_ALIGN(rt_req.nl.nlmsg_len) + RTA_ALIGN(len);
 
     //if ip_src is local IP, don't send iif_index, else send:
-    if(0 == get_ipif_local(ip_src))
+    if(0 == get_ipif_local(ip_src, if_list))
     {
         len = RTA_LENGTH(32);
         rtap = NLMSG_TAIL(&rt_req.nl);
         rtap->rta_type = RTA_IIF;
         rtap->rta_len = len;
+        int iif_index = get_ipiif(ip_src, if_list);
         memcpy(RTA_DATA(rtap), &iif_index, sizeof(iif_index));
         rt_req.nl.nlmsg_len = NLMSG_ALIGN(rt_req.nl.nlmsg_len) + RTA_ALIGN(len);
     }
@@ -337,24 +398,6 @@ uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, int iif_index)
     else
         return 0;
         //return -(*oif);
-}
-
-uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src)
-{
-    uint16_t next_hop_id;
-    next_hop_id = get_route(ip_dst, ip_src);
-    if(0 == next_hop_id)
-    {
-        int iif_index = get_ipiif(ip_src);
-        uint32_t next_hop_ip = get_sys_iproute(ip_dst, ip_src, iif_index);
-        //if((next_hop_ip > 0) && (((next_hop_ip ^ global_tunif.h) & 0xFFFF0000) == 0x0))
-        if((next_hop_ip & global_tunif.mask) == (global_tunif.addr & global_tunif.mask))
-            next_hop_id = (uint16_t)ntohl(next_hop_ip);
-        else
-            next_hop_id = 1;  //this limits the use of ID 0.1, 0.1 cann't be used by any server/client, it always indicates local.
-        add_route(next_hop_id, ip_dst, ip_src);
-    }
-    return next_hop_id;
 }
 
 

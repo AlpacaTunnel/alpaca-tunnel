@@ -9,10 +9,12 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 
+
 //rtnetlink's args are in network byte order, so are the parameters & data in this file
 
 /*
-on receiving RTMGRP_NOTIFY, these two tables will be reset.
+caller should watch if ip route/rule has changed.
+on receiving RTMGRP_NOTIFY, these two tables must be reset.
 route table: clear
 ip_dst      ip_src      next_hop_id
 2.2.2.2     10.1.1.2    1.1
@@ -55,6 +57,11 @@ struct rtnl_handle
 
 #define RT_TB_SIZE 1024
 
+//must call at first
+int init_route_spin();
+//must call at the end
+int destroy_route_spin();
+
 int clear_route();
 int add_route(uint16_t next_hop_id, uint32_t ip_dst, uint32_t ip_src);
 uint16_t get_route(uint32_t ip_dst, uint32_t ip_src);
@@ -63,22 +70,15 @@ int clear_if_info(struct if_info *info);
 int collect_if_info(struct if_info **first);
 
 //given an IP, return the iif's index
-int get_ipiif(uint32_t ip);
+int get_ipiif(uint32_t ip, struct if_info *if_list);
 //given an IP, return the iif's mask
-uint32_t get_ipmask(uint32_t ip);
-//given an IP, return the if's index if the IP is a local IP
-int get_ipif_local(uint32_t ip);
+uint32_t get_ipmask(uint32_t ip, struct if_info *if_list);
+//given an IP, return the if's index if the IP is a local IP(the IP is in if_list)
+int get_ipif_local(uint32_t ip, struct if_info *if_list);
 
 //return gateway or 0
-uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, int iif_index);
+uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, struct if_info *if_list);
 
-
-/* get next hop id form route_table or system route table
- * return value:
- * 1 : local or link dst, should write to tunnel interface
- * >1: the ID of other tunnel server
-*/
-uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src);
 
 
 #endif
