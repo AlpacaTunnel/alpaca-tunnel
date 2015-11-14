@@ -75,9 +75,11 @@ check_tun_name()
 {
     [ -z $1 ] && return 0
     local tunif=$1
-    ifconfig -a | grep -q $tunif
+    #ifconfig -a | grep -q $tunif
+    ip addr | grep -q $tunif
     if [ $? == 0 ]; then
-        for ifname in `ifconfig -a | grep $tunif | awk '{print $1}'`; do 
+        tunlist=`ip addr | grep $tunif | grep -E "^[0-9]{1,9}" | awk '{print $2}' | awk -F: '{print $1}'`
+        for ifname in $tunlist; do 
             [ $tunif == $ifname ] && return 1   #there is a same tun
             return 2    #there is a tun with the same prefix
         done
@@ -215,7 +217,8 @@ serverup()
         echo "default route lost, nothing to do!"
         return 1
     fi
-    gwmtu=`ifconfig $default_gw_dev | grep MTU | sed -e 's/.*MTU:\([^ ]*\).*/\1/'`
+    #gwmtu=`ifconfig $default_gw_dev | grep MTU | sed -e 's/.*MTU:\([^ ]*\).*/\1/'`
+    gwmtu=`ip link show dev $default_gw_dev | grep -i mtu | sed -e 's/.*mtu \([^ ]*\).*/\1/'`
     gwmtu=$((gwmtu-HEADER_LEN))
     TUN_MTU=$((gwmtu<TUN_MTU?gwmtu:TUN_MTU))
 
@@ -239,7 +242,8 @@ serverup()
     if [ $? == 0 ]; then
         cp -f $0 $BACKUP_SCRIPT > /dev/null
         cp -f $CONF_FILE $BACKUP_CONF > /dev/null
-        ifconfig $TUNIF | grep inet | awk '{print $2}' | awk -F: '{print "tunnel IP : "$2}'
+        #ifconfig $TUNIF | grep inet | awk '{print $2}' | awk -F: '{print "tunnel IP : "$2}'
+        ip addr show dev $TUNIF | grep inet | awk '{print "tunnel IP : "$2}'
         echo "tunnel MTU: $TUN_MTU"
         echo "$EXE_NAME started on port $PORT with $TUNIF."
         return 0
@@ -326,7 +330,8 @@ clientup()
             echo "no route to server, nothing to do!"
             return 1
         fi
-        gwmtu=`ifconfig $server_gw_dev | grep MTU | sed -e 's/.*MTU:\([^ ]*\).*/\1/'`
+        #gwmtu=`ifconfig $server_gw_dev | grep MTU | sed -e 's/.*MTU:\([^ ]*\).*/\1/'`
+        gwmtu=`ip link show dev $server_gw_dev | grep -i mtu | sed -e 's/.*mtu \([^ ]*\).*/\1/'`
         gwmtu=$((gwmtu-HEADER_LEN))
         TUN_MTU=$((gwmtu<TUN_MTU?gwmtu:TUN_MTU))
     done
@@ -367,7 +372,8 @@ clientup()
     if [ $? == 0 ]; then
         cp -f $0 $BACKUP_SCRIPT > /dev/null
         cp -f $CONF_FILE $BACKUP_CONF > /dev/null
-        ifconfig $TUNIF | grep inet | awk '{print $2}' | awk -F: '{print "tunnel IP : "$2}'
+        #ifconfig $TUNIF | grep inet | awk '{print $2}' | awk -F: '{print "tunnel IP : "$2}'
+        ip addr show dev $TUNIF | grep inet | awk '{print "tunnel IP : "$2}'
         echo "tunnel MTU: $TUN_MTU"
         echo "$EXE_NAME started with $TUNIF. Default routing to $TUN_GW"
         return 0
@@ -444,14 +450,16 @@ search_instance()
     fi
     echo "Total running instance: $tunnr"
 
-    tunlist=`ifconfig | grep $TUN_PREFIX | awk '{print $1}'`
+    #tunlist=`ifconfig | grep $TUN_PREFIX | awk '{print $1}'`
+    tunlist=`ip addr | grep $TUN_PREFIX | grep -E "^[0-9]{1,9}" | awk '{print $2}' | awk -F: '{print $1}'`
     
     for tunif in $tunlist; do
         pid=`ps aux | grep $tunif | grep -v grep | awk '{print $2}'`
         port=`netstat -anup | grep $EXE_NAME | grep $pid | awk '{print $4}' | awk -F: '{print $2}'`
         ps -ef | grep -v grep | grep -v $BACKUP_PREFIX | grep -q $tunif
         if [ $? == 0 ]; then
-            printf "%s\t\t%s\t\t%s\n" $tunif `ifconfig $tunif | grep inet | awk '{print $2}'` "port:$port"
+            #printf "%s\t\t%s\t\t%s\n" $tunif `ifconfig $tunif | grep inet | awk '{print $2}'` "port:$port"
+            printf "%s\t\t%s\t\t%s\n" $tunif `ip addr show dev $tunif | grep inet | awk '{print $2}'` "port:$port"
         fi
     done
     

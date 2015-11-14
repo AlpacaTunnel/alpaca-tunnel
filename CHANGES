@@ -7,6 +7,10 @@ Todo list:
 6. IPv6
 
 
+1.2.2 2015-11-14
+- support CentOS
+
+
 1.2.1 2015-11-14
 - bug fix: watch ipv4 rule changes
 
