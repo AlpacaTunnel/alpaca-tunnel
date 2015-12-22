@@ -35,6 +35,7 @@ typedef enum { false, true } bool;
 #define RELATIVE_PATH_TO_SECRETS "alpaca_tunnel.d/alpaca_secrets"
 #define PATH_LEN 1024
 #define PROCESS_NAME "AlpacaTunnel"
+#define VERSION "2.0"
 
 #define TUN_NETMASK 0xFFFF0000
 //tunnel MTU must not be greater than 1440
@@ -46,41 +47,95 @@ typedef enum { false, true } bool;
 #define AES_KEY_LEN 128
 #define DEFAULT_PORT 1984
 
-#define HEADER_LEN 16
-#define ICV_LEN 16
+
+struct m_type_len_t
+{
+    uint m:1;
+    uint type:4;
+    uint len:11;
+} __attribute__((packed));
+
+typedef union
+{
+    struct m_type_len_t bit;
+    uint16_t u16;
+} m_type_len_u;
+
+struct ttl_random_t
+{
+    uint ttl:4;
+    uint random:12;
+} __attribute__((packed));
+
+typedef union
+{
+    struct ttl_random_t bit;
+    uint16_t u16;
+} ttl_random_u;
+
+struct seq_frag_off_t
+{
+    uint32_t seq:24;
+    uint frag:1;
+    uint off:7;
+} __attribute__((packed));
+
+typedef union
+{
+    struct seq_frag_off_t bit;
+    uint32_t u32;
+} seq_frag_off_u;
+
 /*
   all data in header are stored in network bit/byte order.
-  the id in packet header is always the sender's id.
 */
-struct tunnel_header
-{
-    uint16_t id;  //sender's ID
-    uint16_t m_type_len;
-    uint32_t time;
-    uint32_t seq_frag_off;
-    uint32_t padding;
-};
 
+struct tunnel_header_t
+{
+    m_type_len_u m_type_len;
+    ttl_random_u ttl_random;
+    uint16_t src_id;
+    uint16_t dst_id;
+    uint32_t time;
+    seq_frag_off_u seq_frag_off;
+} __attribute__((packed));
+
+
+/*
+    struct tunnel_header_t send_head;
+    send_head.m_type_len.bit.m = 1;
+    send_head.m_type_len.bit.type = 10;
+    send_head.m_type_len.bit.len = 0;
+    printf("%d\n", send_head.m_type_len.u16);
+*/
+
+/*
 #define HEAD_MASK_MORE 0x8000
 #define HEAD_MASK_TYPE 0x7800
 #define HEAD_MASK_LEN  0x07FF
+#define HEAD_MASK_TTL  0xF000
+#define HEAD_MASK_RANDOM  0x0FFF
 #define HEAD_MASK_SEQ  0xFFFFFF00
 #define HEAD_MASK_FRAG 0x00000080
 #define HEAD_MASK_OFF  0x0000007F
+*/
 
-#define HEAD_MORE_FALSE 0x0000
-#define HEAD_MORE_TRUE  0x8000
-#define HEAD_TYPE_DATA  0x0000
-#define HEAD_TYPE_MSG   0x0800
-#define HEAD_FRAG_FALSE 0x00000000
-#define HEAD_FRAG_TRUE  0x00000080
+#define HEADER_LEN 16
+#define ICV_LEN 16
+#define HEAD_MORE_FALSE 0
+#define HEAD_MORE_TRUE  1
+#define HEAD_TYPE_DATA  0
+#define HEAD_TYPE_MSG   1
+#define HEAD_FRAG_FALSE 0
+#define HEAD_FRAG_TRUE  1
 #define IPV4_HEAD_LEN 20
-#define OFFSET_IPV4_CSUM 10
-#define OFFSET_IPV4_SADDR 12
-#define OFFSET_IPV4_DADDR 16
-#define OFFSET_IPV4_FRAGOFF 0x1FFF  //in host byte order
-#define INTER_SWITCH_NET 0x7FFF0000  //127.255.0.0 in host byte order
-#define BETWEEN_TUN_NET 0x7F000000  //127.0.0.0 in host byte order
+#define TCP_HEAD_LEN 40
+#define IPV4_OFFSET_CSUM 10
+#define IPV4_OFFSET_SADDR 12
+#define IPV4_OFFSET_DADDR 16
+#define IPV4_MASK_FRAGOFF 0x1FFF  //in host byte order
+#define TTL_MAX 0xF
+#define TTL_MIN 0
 
 #define WRITE_BUF_SIZE 50000000
 #define SEND_BUF_SIZE 50000000
@@ -90,7 +145,7 @@ struct tunnel_header
 #define MAX_ID 65535
 //reserved ID: 0.0, 0.1, 255.255, any server/client cann't use.
 
-struct ip_dot_decimal   //in network byte order
+struct ip_dot_decimal_t   //in network byte order
 {
     byte a;
     byte b;
@@ -98,7 +153,7 @@ struct ip_dot_decimal   //in network byte order
     byte d;
 } __attribute__((packed));
 
-struct packet_profile
+struct packet_profile_t
 {
     uint16_t from_peer;
     uint16_t to_peer;
@@ -108,25 +163,24 @@ struct packet_profile
 };
 
 //data struct of peers in memory.
-struct peer_profile
+struct peer_profile_t
 {
     uint16_t id;
     bool valid;
     bool dup;   //when set, packet will be double sent.
     uint16_t srtt;
-    uint32_t time;
-    uint32_t seq;
+    uint32_t local_time;
+    uint32_t local_seq;
     uint32_t * pre;
     uint32_t * now;
     byte psk[2*AES_TEXT_LEN];
     struct sockaddr_in *peeraddr;   //peer IP
     int port;   //peer port
     uint32_t vip;   //virtual client ip
-    uint32_t inter_vip;   //virtual client ip, used for internal switch
     uint32_t rip;   //real client ip, will be NATed to vip
 };
 
-//client_read and client_recv are only for demostrating
+//client_read and client_recv are obsoleted
 void* client_read(void *arg);
 void* client_recv(void *arg);
 
@@ -139,8 +193,8 @@ void* reset_link_route(void *arg);
 int tun_alloc(char *dev, int flags); 
 int printlog(int en, char* format, ...);
 int usage(char *pname);
-struct peer_profile** init_peer(FILE *secrets_file);
-int free_peer(struct peer_profile **p2);
+struct peer_profile_t** init_peer(FILE *secrets_file);
+int free_peer(struct peer_profile_t **p2);
 void sig_handler(int signum);
 uint16_t do_csum(uint16_t old_sum, uint32_t old_ip, uint32_t new_ip);
 int ip_dnat(byte* ip_load, uint32_t new_ip);
@@ -150,8 +204,10 @@ int shrink_line(char *line);
 
 /* get next hop id form route_table or system route table
  * return value:
+ * 0 : actually, will never return 0. instead, return 1.
  * 1 : local or link dst, should write to tunnel interface
  * >1: the ID of other tunnel server
+ * if next_hop_id == global_self_id, return 1
 */
 uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src);
 
@@ -161,11 +217,9 @@ static int global_sysroute_change = 0;
 static uint16_t global_self_id = 0;
 
 //in network byte order.
-static struct if_info global_tunif;
-static struct if_info *global_if_list;
-static uint16_t global_offset_ipv4_fragoff;
-static uint32_t global_inter_switch_net;
-static uint32_t global_between_tun_net;
+static struct if_info_t global_tunif;
+static struct if_info_t *global_if_list;
+static uint16_t global_ipv4_mask_fragoff;
 
 //static int global_packet_cnt_write = 0;
 //static int global_packet_cnt_send = 0;
@@ -177,7 +231,7 @@ static int global_tunfd, global_sockfd;
 
 int usage(char *pname)
 {
-    printf("Usage: %s [-p port] [-g group] [-n id] [-i tun]\n", pname);
+    printf("Usage: %s [-v|V] [-p port] [-g group] [-n id] [-i tun]\n", pname);
     return 0;
 }
 
@@ -186,14 +240,12 @@ int main(int argc, char *argv[])
     init_route_spin();
     global_if_list = NULL;
     collect_if_info(&global_if_list);
-    global_offset_ipv4_fragoff = htons(OFFSET_IPV4_FRAGOFF);
-    global_inter_switch_net = htonl(INTER_SWITCH_NET);
-    global_between_tun_net = htonl(BETWEEN_TUN_NET);
+    global_ipv4_mask_fragoff = htons(IPV4_MASK_FRAGOFF);
     global_running = 1;
 
     int rc1=0, rc2=0, rc5=0, rc6=0;
     //uint16_t clid = 0;
-    struct peer_profile ** peer_table = NULL;
+    struct peer_profile_t ** peer_table = NULL;
     pthread_t tid1=0, tid2=0, tid5=0, tid6=0;
     struct sockaddr_in servaddr;
     int port = DEFAULT_PORT;
@@ -203,10 +255,14 @@ int main(int argc, char *argv[])
     char secrets_path[PATH_LEN] = "\0";
 
     int opt;
-    while((opt = getopt(argc, argv, "p:g:n:i:")) != -1)
+    while((opt = getopt(argc, argv, "vVp:g:n:i:")) != -1)
     {
         switch(opt)
         {
+        case 'v':
+        case 'V':
+            printf("%s %s\n", PROCESS_NAME, VERSION);
+            exit(1);
         case 'p':
             port = atoi(optarg);
             if(port < 0 || port > 65534)
@@ -272,6 +328,7 @@ int main(int argc, char *argv[])
     struct sockaddr_in *tmp_in = (struct sockaddr_in *)&tmp_ifr.ifr_addr;
     global_tunif.addr = tmp_in->sin_addr.s_addr;
     global_tunif.mask = get_ipmask(global_tunif.addr, global_if_list);
+    //tunif IP must be a /16 network, and must match self ID! otherwise, from/to peer will be confusing.
     if(TUN_NETMASK != ntohl(global_tunif.mask))
     {
         printlog(0, "error: tunnel mask is not /16\n");
@@ -496,14 +553,14 @@ int tun_alloc(char *dev, int flags)
     return fd;
 }
 
-struct peer_profile** init_peer(FILE *secrets_file)
+struct peer_profile_t** init_peer(FILE *secrets_file)
 {
     if(NULL == secrets_file)
         return NULL;
 
     int i;
     int peer_num = MAX_ID+1;
-    struct peer_profile ** p2 = (struct peer_profile **)malloc((MAX_ID+1) * sizeof(struct peer_profile*));
+    struct peer_profile_t ** p2 = (struct peer_profile_t **)malloc((MAX_ID+1) * sizeof(struct peer_profile_t*));
     if(p2 == NULL)
     {
         printlog(errno, "init_peer: malloc failed");
@@ -512,7 +569,7 @@ struct peer_profile** init_peer(FILE *secrets_file)
     for(i = 0; i < peer_num; i++)
         p2[i] = NULL;
 
-    struct peer_profile * p1 = (struct peer_profile *)malloc(sizeof(struct peer_profile));
+    struct peer_profile_t * p1 = (struct peer_profile_t *)malloc(sizeof(struct peer_profile_t));
     if(p1 == NULL)
     {
         printlog(errno, "init_peer: malloc failed");
@@ -600,11 +657,12 @@ struct peer_profile** init_peer(FILE *secrets_file)
         if(ip6 != NULL && strcmp(ip6, "none") != 0)
             printlog(0, "IPv6 not supported now, ignore it!\n");
 
-        p1->vip = (global_tunif.addr & global_tunif.mask) | htonl(id); //in network byte order.
-        p1->inter_vip = (global_inter_switch_net & global_tunif.mask) | htonl(id); //in network byte order.
-        p1->rip = 0;
+        //p1->vip = (global_tunif.addr & global_tunif.mask) | htonl(id); //in network byte order.
+        //p1->rip = 0;
+        p1->vip = htonl(id); //0.0.x.x in network byte order, used inside tunnel.
+        p1->rip = (global_tunif.addr & global_tunif.mask) | htonl(id); //in network byte order.
 
-        struct peer_profile * tmp1 = (struct peer_profile *)malloc(sizeof(struct peer_profile));
+        struct peer_profile_t * tmp1 = (struct peer_profile_t *)malloc(sizeof(struct peer_profile_t));
         if(tmp1 == NULL)
         {
             printlog(errno, "init_peer: malloc failed");
@@ -612,7 +670,7 @@ struct peer_profile** init_peer(FILE *secrets_file)
             p2 = NULL;
             return NULL;
         }
-        memcpy(tmp1, p1, sizeof(struct peer_profile));
+        memcpy(tmp1, p1, sizeof(struct peer_profile_t));
         p2[id] = tmp1;
     }
     free(line);
@@ -644,7 +702,7 @@ int shrink_line(char *line)
     return strlen(line);
 }
 
-int free_peer(struct peer_profile **p2)
+int free_peer(struct peer_profile_t **p2)
 {
     if(NULL == p2)
         return 0;
@@ -690,19 +748,19 @@ int ip_dnat(byte* ip_load, uint32_t new_ip)
     memcpy(&ip_h, ip_load, IPV4_HEAD_LEN);
     if(ip_h.daddr == new_ip)
         return 0;
-    memcpy(&ip_load[OFFSET_IPV4_DADDR], &new_ip, 4);
+    memcpy(&ip_load[IPV4_OFFSET_DADDR], &new_ip, 4);
     csum = do_csum(ip_h.check, ip_h.daddr, new_ip);
-    memcpy(&ip_load[OFFSET_IPV4_CSUM], &csum, 2);     //recalculated ip checksum
+    memcpy(&ip_load[IPV4_OFFSET_CSUM], &csum, 2);     //recalculated ip checksum
     //if packet is fragmented, can only recaculate the first fragment.
     //Because the following packets don't have a layer 4 header!
-    if(6 == ip_h.protocol && (global_offset_ipv4_fragoff & ip_h.frag_off) == 0 )    //tcp
+    if(6 == ip_h.protocol && (global_ipv4_mask_fragoff & ip_h.frag_off) == 0 )    //tcp
     {
         int csum_off = 4*ip_h.ihl + 16;
         memcpy(&csum, ip_load+csum_off, 2);
         csum = do_csum(csum, ip_h.daddr, new_ip);
         memcpy(ip_load+csum_off, &csum, 2);    //recalculated tcp checksum
     }
-    else if(17 == ip_h.protocol && (global_offset_ipv4_fragoff & ip_h.frag_off) == 0 )  //udp
+    else if(17 == ip_h.protocol && (global_ipv4_mask_fragoff & ip_h.frag_off) == 0 )  //udp
     {
         int csum_off = 4*ip_h.ihl + 6;
         memcpy(&csum, ip_load+csum_off, 2);
@@ -719,19 +777,19 @@ int ip_snat(byte* ip_load, uint32_t new_ip)
     memcpy(&ip_h, ip_load, IPV4_HEAD_LEN);
     if(ip_h.saddr == new_ip)
         return 0;
-    memcpy(&ip_load[OFFSET_IPV4_SADDR], &new_ip, 4);
+    memcpy(&ip_load[IPV4_OFFSET_SADDR], &new_ip, 4);
     csum = do_csum(ip_h.check, ip_h.saddr, new_ip);
-    memcpy(&ip_load[OFFSET_IPV4_CSUM], &csum, 2);     //recalculated ip checksum
+    memcpy(&ip_load[IPV4_OFFSET_CSUM], &csum, 2);     //recalculated ip checksum
     //if packet is fragmented, can only recaculate the first fragment.
     //Because the following packets don't have a layer 4 header!
-    if(6 == ip_h.protocol && (global_offset_ipv4_fragoff & ip_h.frag_off) == 0 )    //tcp
+    if(6 == ip_h.protocol && (global_ipv4_mask_fragoff & ip_h.frag_off) == 0 )    //tcp
     {
         int csum_off = 4*ip_h.ihl + 16;
         memcpy(&csum, ip_load+csum_off, 2);
         csum = do_csum(csum, ip_h.saddr, new_ip);
         memcpy(ip_load+csum_off, &csum, 2);    //recalculated tcp checksum
     }
-    else if(17 == ip_h.protocol && (global_offset_ipv4_fragoff & ip_h.frag_off) == 0 )  //udp
+    else if(17 == ip_h.protocol && (global_ipv4_mask_fragoff & ip_h.frag_off) == 0 )  //udp
     {
         int csum_off = 4*ip_h.ihl + 6;
         memcpy(&csum, ip_load+csum_off, 2);
@@ -748,132 +806,23 @@ uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src)
     if(0 == next_hop_id)
     {
         uint32_t next_hop_ip = get_sys_iproute(ip_dst, ip_src, global_if_list);
-        //if((next_hop_ip > 0) && (((next_hop_ip ^ global_tunif.h) & 0xFFFF0000) == 0x0))
+        //next_hop_ip is in tunif's subnet
         if((next_hop_ip & global_tunif.mask) == (global_tunif.addr & global_tunif.mask))
             next_hop_id = (uint16_t)ntohl(next_hop_ip);
-        else
-            next_hop_id = 1;  //this limits the use of ID 0.1, 0.1 cann't be used by any server/client, it always indicates local.
+        else  //this limits the use of ID 0.1, 0.1 cann't be used by any peer, it always indicates local.
+            next_hop_id = 1;
+
+        if(global_self_id == next_hop_id)
+            next_hop_id = 1;
         add_route(next_hop_id, ip_dst, ip_src);
     }
     return next_hop_id;
 }
 
-void* client_read(void *arg)
-{
-    struct tunnel_header header_send;
-    struct peer_profile * peer_table = (struct peer_profile *)arg;
-    uint16_t peerid = 0;
-    struct iphdr ip_h;
-    struct sockaddr_in *peeraddr = peer_table[peerid].peeraddr;
-    uint16_t len_load, len_pad, nr_aes_block;
-    byte buf_load[TUN_MTU];
-    byte buf_send[ETH_MTU];
-    byte buf_header[HEADER_LEN];
-    int i;
-    srandom(time(NULL));
-    for(i=0; i<ETH_MTU; i++)   //set random padding data
-        buf_send[i] = random();
-    bzero(buf_load, TUN_MTU);
-
-    while(global_running)
-    {
-        if( (len_load = read(global_tunfd, buf_load, TUN_MTU)) < 0 )
-        {
-            printlog(errno, "tunif %s read error", global_tunif.name);
-            continue;
-        }
-
-        memcpy(&ip_h, buf_load, IPV4_HEAD_LEN);
-        peerid = get_next_hop_id(ip_h.daddr, ip_h.saddr);
-        
-        if(false == peer_table[peerid].valid || 1 == peerid || global_self_id == peerid)
-        {
-            printlog(0, "tunif %s read packet to peer %d.%d: invalid peer!\n", global_tunif.name, peerid/256, peerid%256);
-            continue;
-        }
-
-        header_send.id = htons(peer_table[peerid].id);
-        header_send.m_type_len = 0;
-        header_send.m_type_len |= ( HEAD_MASK_MORE & HEAD_MORE_FALSE );
-        header_send.m_type_len |= ( HEAD_MASK_TYPE & HEAD_TYPE_DATA  );
-        header_send.m_type_len |= ( HEAD_MASK_LEN & len_load );
-        header_send.m_type_len = htons(header_send.m_type_len);
-        header_send.time = htonl(time(NULL));
-        header_send.padding = random();
-
-        memcpy(buf_header, &header_send, HEADER_LEN);
-        //encrypt header with group PSK
-        encrypt(buf_send, buf_header, global_buf_group_psk, AES_KEY_LEN);
-        //encrypt header to generate icv
-        encrypt(&buf_send[HEADER_LEN], buf_header, peer_table[peerid].psk, AES_KEY_LEN);
-
-        nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
-        for(i=0; i<nr_aes_block; i++)
-            encrypt(&buf_send[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], 
-                &buf_load[i*AES_TEXT_LEN], peer_table[peerid].psk, AES_KEY_LEN);
-
-        len_pad = (len_load > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
-        if(sendto(global_sockfd, buf_send, HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN + len_pad, \
-            0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
-            printlog(errno, "tunif %s sendto socket error", global_tunif.name);
-    }
-
-    return NULL;
-}
-
-void* client_recv(void *arg)
-{
-    struct tunnel_header header_recv;
-    struct peer_profile * peer_table = (struct peer_profile *)arg;
-    uint16_t peerid = 0;
-    struct sockaddr_in *peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
-    socklen_t peeraddr_len = sizeof(*peeraddr);
-    uint16_t len_load, nr_aes_block;
-    int i;
-    byte buf_recv[ETH_MTU];
-    byte buf_load[TUN_MTU];
-    byte buf_header[HEADER_LEN];
-    byte buf_icv[ICV_LEN];
-
-    while(global_running)
-    {
-        if(recvfrom(global_sockfd, buf_recv, ETH_MTU, 0, (struct sockaddr *)peeraddr, &peeraddr_len) < HEADER_LEN+ICV_LEN)
-        {
-            printlog(errno, "tunif %s recvfrom socket error", global_tunif.name);
-            continue;
-        }
-
-        decrypt(buf_header, buf_recv, global_buf_group_psk, AES_KEY_LEN);  //decrypt header with group PSK
-        memcpy(&header_recv, buf_header, HEADER_LEN);
-        //header_recv.time = ntohl(header_recv.time);
-
-        encrypt(buf_icv, buf_header, peer_table[peerid].psk, AES_KEY_LEN);  //encrypt header to generate icv
-        if(strncmp((char*)buf_icv, (char*)&buf_recv[HEADER_LEN], ICV_LEN) != 0)
-        {
-            printlog(0, "tunif %s icv doesn't match!\n", global_tunif.name);
-            continue;
-        }
-
-        header_recv.m_type_len = ntohs(header_recv.m_type_len);
-        len_load = HEAD_MASK_LEN & header_recv.m_type_len;
-        nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
-
-        for(i=0; i<nr_aes_block; i++)
-            decrypt(&buf_load[i*AES_TEXT_LEN], 
-                &buf_recv[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], peer_table[peerid].psk, AES_KEY_LEN);
-
-        if(write(global_tunfd, &buf_load, len_load) < 0 )
-            printlog(errno, "tunif %s write error", global_tunif.name);
-    }
-
-    free(peeraddr);
-    return NULL;
-}
-
 void* watch_link_route(void *arg)
 {
     char buf[8192];
-    struct rtnl_handle rth;
+    struct rtnl_handle_t rth;
     rth.fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
     bzero(&rth.local, sizeof(rth.local));
     rth.local.nl_family = AF_NETLINK;
@@ -883,7 +832,7 @@ void* watch_link_route(void *arg)
         RTMGRP_NOTIFY;
     if(bind(rth.fd, (struct sockaddr*) &rth.local, sizeof(rth.local)) < 0)
     {
-        printlog(errno, "rtnl_handle bind error");
+        printlog(errno, "rtnl_handle_t bind error");
         global_running = 0;
     }
 
@@ -913,7 +862,7 @@ void* reset_link_route(void *arg)
             if(collect_if_info(&global_if_list) != 0)
                 continue;
 
-            //must clear if_info first, then clear_route
+            //must clear if_info_t first, then clear_route
             if(clear_route() != 0)
                 continue;
 
@@ -926,10 +875,13 @@ void* reset_link_route(void *arg)
 
 void* server_read(void *arg)
 {
-    struct tunnel_header header_send;
-    struct peer_profile ** peer_table = (struct peer_profile **)arg;
-    uint16_t peerid = 0;
+    struct tunnel_header_t header_send;
+    struct peer_profile_t ** peer_table = (struct peer_profile_t **)arg;
+    //uint16_t peerid = 0;
     uint16_t next_id = 0;
+    uint16_t src_id;
+    uint16_t dst_id;
+    uint16_t bigger_id;
     struct sockaddr_in *peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
     struct iphdr ip_h;
     uint16_t len_load, len_pad, nr_aes_block;
@@ -957,47 +909,89 @@ void* server_read(void *arg)
         //printlog(0, "in read: dest: %d\n", next_id);
 
         //peerid = (uint16_t)ntohl(ip_h.daddr);
-        peerid = next_id;
-        if(NULL == peer_table[peerid] || 1 == peerid || global_self_id == peerid)
+        //peerid = next_id;
+        if(NULL == peer_table[next_id] || 1 == next_id || global_self_id == next_id)
         {
-            printlog(0, "tunif %s read packet to peer %d.%d: invalid peer!\n", global_tunif.name, peerid/256, peerid%256);
+            printlog(0, "tunif %s read packet to peer %d.%d: invalid peer!\n", global_tunif.name, next_id/256, next_id%256);
             continue;
         }
-        if(NULL == peer_table[peerid]->peeraddr)
+        if(NULL == peer_table[next_id]->peeraddr)
         {
-            printlog(0, "tunif %s read packet to peer %d.%d: invalid addr!\n", global_tunif.name, peerid/256, peerid%256);
+            printlog(0, "tunif %s read packet to peer %d.%d: invalid addr!\n", global_tunif.name, next_id/256, next_id%256);
             continue;
         }
-        memcpy(peeraddr, peer_table[peerid]->peeraddr, sizeof(struct sockaddr_in));
+        memcpy(peeraddr, peer_table[next_id]->peeraddr, sizeof(struct sockaddr_in));
 
-        //daddr is in the same network with global_tunif
-        if((ip_h.daddr & global_tunif.mask) == (global_tunif.addr & global_tunif.mask))
-        {
-            if(ip_h.saddr == global_tunif.addr)  //saddr is local tunif
-            {
-                //printlog(0, "sent from local tunif\n");
-                uint32_t rip = htonl(peerid) | global_between_tun_net;     //apply dnat, daddr is 127.0.x.x
-                ip_dnat(buf_load, rip);
-            }
-            else //saddr is NOT local tunif, traffic passing by
-            {
-                uint32_t rip = peer_table[peerid]->rip;  //real ip is stored in network byte order.
-                ip_dnat(buf_load, rip);
-            }
-        }
+        //dst addr is in the same network with global_tunif
+        bool dst_inside = ((ip_h.daddr & global_tunif.mask) == (global_tunif.addr & global_tunif.mask));
+        //src addr is in the same network with global_tunif
+        bool src_inside = ((ip_h.saddr & global_tunif.mask) == (global_tunif.addr & global_tunif.mask));
+        //src addr is local tunif
+        bool src_local = (ip_h.saddr == global_tunif.addr);
         
-        if(peerid > global_self_id)
-            buf_psk = peer_table[peerid]->psk;
+        //not supported now: read packet in tunif's subnet but ID mismatch
+        if(src_inside != src_local)
+        {
+            printlog(0, "tunif %s read packet from other peer, ignore it!\n", global_tunif.name);
+            continue;
+        }
+        else if(!dst_inside && !src_inside) //not supported now: outside IP to outside IP
+        {
+            printlog(0, "tunif %s read packet from unknown net to unknown net, ignore it!\n", global_tunif.name);
+            continue;
+        }  
+
+        if(dst_inside)
+        {
+            dst_id = ntohl(ip_h.daddr);
+            ip_dnat(buf_load, peer_table[dst_id]->vip);
+        }
         else
-            buf_psk = peer_table[global_self_id]->psk;
-        header_send.id = htons(global_self_id);
-        header_send.m_type_len = 0;
-        header_send.m_type_len |= ( HEAD_MASK_MORE & HEAD_MORE_FALSE );
-        header_send.m_type_len |= ( HEAD_MASK_TYPE & HEAD_TYPE_DATA  );
-        header_send.m_type_len |= ( HEAD_MASK_LEN & len_load );
-        header_send.m_type_len = htons(header_send.m_type_len);
-        header_send.time = htonl(time(NULL));
-        header_send.padding = random();
+            dst_id = 0;
+
+        if(src_inside)
+        {
+            src_id = ntohl(ip_h.saddr);
+            ip_snat(buf_load, peer_table[src_id]->vip);
+        }
+        else
+            src_id = 0;
+
+        bigger_id = dst_id > src_id ? dst_id : src_id;
+        if(NULL == peer_table[bigger_id])
+        {
+            printlog(0, "tunif %s read packet of invalid peer: %d.%d!\n", global_tunif.name, bigger_id/256, bigger_id%256);
+            continue;
+        }
+
+        buf_psk = peer_table[bigger_id]->psk;
+        header_send.dst_id = htons(dst_id);
+        header_send.src_id = htons(src_id);
+        header_send.m_type_len.bit.m = HEAD_MORE_FALSE;
+        header_send.m_type_len.bit.type = HEAD_TYPE_DATA;
+        header_send.m_type_len.bit.len = len_load;
+        header_send.m_type_len.u16 = htons(header_send.m_type_len.u16);
+        header_send.ttl_random.bit.ttl = TTL_MAX;
+        header_send.ttl_random.bit.random = random();
+        header_send.ttl_random.u16 = htons(header_send.ttl_random.u16);
+        uint32_t now = time(NULL);
+        if(peer_table[next_id]->local_time == now)
+        {
+            peer_table[next_id]->local_seq++;
+            //printf("-----------------local time is: %d\n", peer_table[next_id]->local_time);
+            //printf("-----------------local seq is: %d\n", peer_table[next_id]->local_seq);
+        }
+        else
+        {
+            peer_table[next_id]->local_seq = 0;
+            peer_table[next_id]->local_time = now;
+        }
+
+        header_send.time = htonl(now);
+        header_send.seq_frag_off.bit.seq = peer_table[next_id]->local_seq;
+        header_send.seq_frag_off.bit.frag = 0;
+        header_send.seq_frag_off.bit.off = 0;
+        header_send.seq_frag_off.u32 = htonl(header_send.seq_frag_off.u32);
 
         memcpy(buf_header, &header_send, HEADER_LEN);
         encrypt(buf_send, buf_header, global_buf_group_psk, AES_KEY_LEN);  //encrypt header with group PSK
@@ -1019,21 +1013,26 @@ void* server_read(void *arg)
 
 void* server_recv(void *arg)
 {
-    struct tunnel_header header_recv, header_send;
-    struct peer_profile ** peer_table = (struct peer_profile **)arg;
+    struct tunnel_header_t header_recv, header_send;
+    struct peer_profile_t ** peer_table = (struct peer_profile_t **)arg;
     uint16_t peerid = 0;
     uint16_t next_id = 0;
+    uint16_t dst_id = 0;
+    uint16_t src_id = 0;
+    uint16_t bigger_id = 0;
+    uint ttl;
     struct sockaddr_in *peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
     socklen_t peeraddr_len = sizeof(*peeraddr);
     struct iphdr ip_h;
-    struct ip_dot_decimal ip_daddr;
-    struct ip_dot_decimal ip_saddr;
+    struct ip_dot_decimal_t ip_daddr;
+    struct ip_dot_decimal_t ip_saddr;
     uint16_t len_load, nr_aes_block;
+    uint nr_aes_block_ipv4_header = (IPV4_HEAD_LEN + TCP_HEAD_LEN + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
     int i;
     byte * buf_psk;
     byte buf_recv[ETH_MTU];
     byte buf_load[TUN_MTU];
-    byte buf_send[TUN_MTU];
+    //byte buf_send[TUN_MTU];
     byte buf_header[HEADER_LEN];
     byte buf_icv[ICV_LEN];
     //printlog(0, "global_self_id: %d\n", global_self_id);
@@ -1049,9 +1048,19 @@ void* server_recv(void *arg)
         //printlog(0, "recved :1 \n" );
         decrypt(buf_header, buf_recv, global_buf_group_psk, AES_KEY_LEN);  //decrypt header with group PSK
         memcpy(&header_recv, buf_header, HEADER_LEN);
+        memcpy(&header_send, &header_recv, sizeof(struct tunnel_header_t));
         //header_recv.time = ntohl(header_recv.time);
         
-        peerid = ntohs(header_recv.id);
+        dst_id = ntohs(header_recv.dst_id);
+        src_id = ntohs(header_recv.src_id);
+        bigger_id = dst_id > src_id ? dst_id : src_id;
+
+        if(NULL == peer_table[bigger_id])
+        {
+            printlog(0, "tunif %s received packet of invalid peer: %d.%d!\n", 
+                global_tunif.name, bigger_id/256, bigger_id%256);
+            continue;
+        }
         //printlog(0, "recv peerid: %d\n", peerid);
         if(peerid != global_self_id && NULL == peer_table[peerid])
         {
@@ -1060,162 +1069,105 @@ void* server_recv(void *arg)
             continue;
         }
 
-        if(peerid > global_self_id)
-            buf_psk = peer_table[peerid]->psk;
-        else
-            buf_psk = peer_table[global_self_id]->psk;
+        buf_psk = peer_table[bigger_id]->psk;
 
         encrypt(buf_icv, buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
         if(strncmp((char*)buf_icv, (char*)&buf_recv[HEADER_LEN], ICV_LEN) != 0)
         {
-            printlog(0, "tunif %s received packet from peer %d.%d: icv doesn't match!\n", 
-                global_tunif.name, peerid/256, peerid%256);
+            printlog(0, "tunif %s received packet of peer %d.%d: icv doesn't match!\n", 
+                global_tunif.name, bigger_id/256, bigger_id%256);
             continue;
         }
-        memcpy(peer_table[peerid]->peeraddr, peeraddr, sizeof(struct sockaddr_in));
+        //store the src's UDP socket.
+        if(src_id != 0 && src_id != 1 && src_id != global_self_id)
+            memcpy(peer_table[src_id]->peeraddr, peeraddr, sizeof(struct sockaddr_in));
 
-        header_recv.m_type_len = ntohs(header_recv.m_type_len);
-        len_load = HEAD_MASK_LEN & header_recv.m_type_len;
+        header_recv.m_type_len.u16 = ntohs(header_recv.m_type_len.u16);
+        len_load = header_recv.m_type_len.bit.len;
         nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
+        header_recv.ttl_random.u16 = ntohs(header_recv.ttl_random.u16);
+        ttl = header_recv.ttl_random.bit.ttl;
+        //uint32_t pkt_time = ntohl(header_recv.time);
+        header_recv.seq_frag_off.u32 = ntohl(header_recv.seq_frag_off.u32);
+        //uint32_t pkt_seq = header_recv.seq_frag_off.bit.seq;
+        //printf("pkt_time: %d\n", pkt_time);
+        //printf("pkt_seq : %d\n", pkt_seq);
 
-        for(i=0; i<nr_aes_block; i++)
+        for(i=0; i<nr_aes_block_ipv4_header; i++)
             decrypt(&buf_load[i*AES_TEXT_LEN], &buf_recv[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], buf_psk, AES_KEY_LEN);
         
         memcpy(&ip_h, buf_load, IPV4_HEAD_LEN);
         memcpy(&ip_saddr, &ip_h.saddr, sizeof(uint32_t));
         memcpy(&ip_daddr, &ip_h.daddr, sizeof(uint32_t));
 
-        //ttl expire, drop packet. only allow 16 hops
-        if(127 == ip_saddr.a && ip_saddr.b < 240)
+        uint32_t daddr, saddr; //network byte order
+        if(0 != dst_id)
         {
-            //printlog(0, "saddr:%d.%d.%d.%d\n",ip_saddr.a,ip_saddr.b,ip_saddr.c,ip_saddr.d);
-            printlog(0, "TTL expired! daddr: %d.%d.%d.%d\n", ip_daddr.a, ip_daddr.b, ip_daddr.c, ip_daddr.d);   
-            continue;
+            daddr = (global_tunif.addr & global_tunif.mask) | ip_h.daddr;
+            ip_dnat(buf_load, daddr);
         }
-
-        //daddr is 127.0.x.x, send to local tunif, should apply both dnat and snat
-        //if((ip_h.daddr & global_tunif.mask) == (global_between_tun_net & global_tunif.mask))
-        else if(127 == ip_daddr.a && 0 == ip_daddr.b)
+        else
+            daddr = ip_h.daddr;
+        if(0 != src_id)
         {
-            //printlog(0, "dnat to local\n");
-            //dnat first
-            uint32_t rip = global_tunif.addr;
-            ip_dnat(buf_load, rip);     //apply dnat, daddr is local tunif
+            saddr = (global_tunif.addr & global_tunif.mask) | ip_h.saddr;
+            ip_snat(buf_load, saddr);
+        }
+        else
+            saddr = ip_h.saddr;
 
-            //snat second
-            uint32_t vip = peer_table[peerid]->vip;     //apply snat, saddr is peer's vip
-            ip_snat(buf_load, vip);
-        
+        next_id = get_next_hop_id(daddr, saddr);
+
+        if( (0 == dst_id && 1 == next_id) || (global_self_id == dst_id) ) //write to local tunif
+        {
+            for(i=nr_aes_block_ipv4_header; i<nr_aes_block; i++)
+                decrypt(&buf_load[i*AES_TEXT_LEN], &buf_recv[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], buf_psk, AES_KEY_LEN);
+
             if(write(global_tunfd, &buf_load, len_load) < 0)
                 printlog(errno, "tunif %s write error", global_tunif.name);
             continue;
         }
 
-        //daddr is 127.x.x.x, should switch packet to client
-        //else if((ip_h.daddr & global_tunif.mask) == (global_inter_switch_net & global_tunif.mask))
-        else if(127 == ip_daddr.a)
+        if( (0 == dst_id && 1 != next_id) || (0 != dst_id && global_self_id != dst_id) ) //switch to next_id or dst_id
         {
-            //printlog(0, "send to client\n");
-            //apply dnat
-            peerid = ntohl(ip_h.daddr);
-            uint32_t rip = peer_table[peerid]->rip;  //real ip is stored in network byte order.
-            ip_dnat(buf_load, rip);
+            //packet dst is not local and ttl expire, drop packet. only allow 16 hops
+            if(TTL_MIN == ttl)
+            {
+                printlog(0, "TTL expired! from %d.%d.%d.%d to %d.%d.%d.%d\n",
+                    ip_saddr.a, ip_saddr.b, ip_saddr.c, ip_saddr.d,
+                    ip_daddr.a, ip_daddr.b, ip_daddr.c, ip_daddr.d);   
+                continue;
+            }
 
-            //encrypt and send to client
-            memcpy(peeraddr, peer_table[peerid]->peeraddr, sizeof(struct sockaddr_in));
-        
-            header_send.id = htons(global_self_id);
-            header_send.m_type_len = 0;
-            header_send.m_type_len |= ( HEAD_MASK_MORE & HEAD_MORE_FALSE );
-            header_send.m_type_len |= ( HEAD_MASK_TYPE & HEAD_TYPE_DATA  );
-            header_send.m_type_len |= ( HEAD_MASK_LEN & len_load );
-            header_send.m_type_len = htons(header_send.m_type_len);
-            header_send.time = htonl(time(NULL));
-            header_send.padding = random();
-    
-            if(peerid > global_self_id)
-                buf_psk = peer_table[peerid]->psk;
-            else
-                buf_psk = peer_table[global_self_id]->psk;
+            if(dst_id != 0)
+                next_id = dst_id;
+
+            if(NULL == peer_table[next_id] || 1 == next_id || global_self_id == next_id)
+            {
+                printlog(0, "tunif %s recv packet to peer %d.%d: invalid peer!\n", global_tunif.name, next_id/256, next_id%256);
+                continue;
+            }
+            if(NULL == peer_table[next_id]->peeraddr)
+            {
+                printlog(0, "tunif %s recv packet to peer %d.%d: invalid addr!\n", global_tunif.name, next_id/256, next_id%256);
+                continue;
+            }
+            memcpy(peeraddr, peer_table[next_id]->peeraddr, sizeof(struct sockaddr_in));
+
+            ttl--;
+            header_send.ttl_random.bit.ttl = ttl;
+            header_send.ttl_random.bit.random = random();
+            header_send.ttl_random.u16 = htons(header_send.ttl_random.u16);
+
             memcpy(buf_header, &header_send, HEADER_LEN);
-            encrypt(buf_send, buf_header, global_buf_group_psk, AES_KEY_LEN);  //encrypt header with group PSK
-            encrypt(&buf_send[HEADER_LEN], buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
-    
-            nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
-            for(i=0; i<nr_aes_block; i++)
-                encrypt(&buf_send[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], &buf_load[i*AES_TEXT_LEN], buf_psk, AES_KEY_LEN);
-    
+            encrypt(buf_recv, buf_header, global_buf_group_psk, AES_KEY_LEN);  //encrypt header with group PSK
+            encrypt(&buf_recv[HEADER_LEN], buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
+
             int len_pad = (len_load > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
-            if(sendto(global_sockfd, buf_send, HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN + len_pad, \
+            if(sendto(global_sockfd, buf_recv, HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN + len_pad, \
                 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
                 printlog(errno, "tunif %s sendto socket error", global_tunif.name);
             continue;
-        }
-
-        //daddr is NOT 127.x.x.x
-        else
-        {
-            peer_table[peerid]->rip = ip_h.saddr;  //save client's inner real saddr in network byte order.
-    
-            next_id = get_next_hop_id(ip_h.daddr, peer_table[peerid]->vip);
-            //printlog(0, "in recv: dest: %d\n", next_id);
-            //printlog(0, "global_self_id: %d\n", global_self_id);
-    
-            if(1 == next_id || global_self_id == next_id)   //write to local tunnel
-            {
-                if(ip_h.daddr == global_tunif.addr)   //send to local tunif
-                {
-                    ;   //do nothing
-                }
-                else   //not send to local tunif
-                {
-                    uint32_t vip = peer_table[peerid]->vip;     //apply snat, saddr is peer's vip
-                    ip_snat(buf_load, vip);
-                }
-                
-                if(write(global_tunfd, &buf_load, len_load) < 0)
-                    printlog(errno, "tunif %s write error", global_tunif.name);
-            }
-            else if(0 != next_id)     //switch to another server
-            {
-                uint32_t vip = peer_table[peerid]->inter_vip;     //apply snat, saddr is 127.255.x.x
-                if(127 == ip_saddr.a)
-                {
-                    ip_saddr.b--;   //decrease TTL
-                    memcpy(&vip, &ip_saddr, sizeof(uint32_t));
-                    vip = (vip & global_tunif.mask) | htonl(peerid); //in network byte order.
-                }
-                ip_snat(buf_load, vip);
-    
-                struct tunnel_header header_send;
-                if(next_id > global_self_id)
-                    buf_psk = peer_table[next_id]->psk;
-                else
-                    buf_psk = peer_table[global_self_id]->psk;
-                header_send.id = htons(global_self_id);
-                byte buf_send[ETH_MTU];
-                header_send.m_type_len = 0;
-                header_send.m_type_len |= ( HEAD_MASK_MORE & HEAD_MORE_FALSE );
-                header_send.m_type_len |= ( HEAD_MASK_TYPE & HEAD_TYPE_DATA  );
-                header_send.m_type_len |= ( HEAD_MASK_LEN & len_load );
-                header_send.m_type_len = htons(header_send.m_type_len);
-                header_send.time = htonl(time(NULL));
-                header_send.padding = random();
-        
-                memcpy(buf_header, &header_send, HEADER_LEN);
-                encrypt(buf_send, buf_header, global_buf_group_psk, AES_KEY_LEN);  //encrypt header with group PSK
-                encrypt(&buf_send[HEADER_LEN], buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
-        
-                nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
-                for(i=0; i<nr_aes_block; i++)
-                    encrypt(&buf_send[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], &buf_load[i*AES_TEXT_LEN], buf_psk, AES_KEY_LEN);
-        
-                //printlog(0, "sendto: %d\n", next_id);
-                int len_pad = (len_load > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
-                if(sendto(global_sockfd, buf_send, HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN + len_pad, \
-                    0, (struct sockaddr *)peer_table[next_id]->peeraddr, sizeof(*peeraddr)) < 0 )
-                    printlog(errno, "tunif %s sendto socket error", global_tunif.name);
-            }
         }
     }
 

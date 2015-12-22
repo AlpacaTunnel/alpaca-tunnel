@@ -30,16 +30,16 @@ if_index    name        ipaddr       mask
 
 */
 
-struct route_item
+struct route_item_t
 {
     uint16_t next_hop_id;
     uint32_t ip_dst;
     uint32_t ip_src;
 };
 
-struct if_info
+struct if_info_t
 {
-    struct if_info *next;
+    struct if_info_t *next;
     int index;
     uint32_t addr;
     uint32_t mask;
@@ -47,7 +47,7 @@ struct if_info
     char name[IFNAMSIZ];
 };
 
-struct rtnl_handle
+struct rtnl_handle_t
 {
     int fd;
     struct sockaddr_nl  local;
@@ -66,18 +66,18 @@ int clear_route();
 int add_route(uint16_t next_hop_id, uint32_t ip_dst, uint32_t ip_src);
 uint16_t get_route(uint32_t ip_dst, uint32_t ip_src);
 
-int clear_if_info(struct if_info *info);
-int collect_if_info(struct if_info **first);
+int clear_if_info(struct if_info_t *info);
+int collect_if_info(struct if_info_t **first);
 
 //given an IP, return the iif's index
-int get_ipiif(uint32_t ip, struct if_info *if_list);
+int get_ipiif(uint32_t ip, struct if_info_t *if_list);
 //given an IP, return the iif's mask
-uint32_t get_ipmask(uint32_t ip, struct if_info *if_list);
+uint32_t get_ipmask(uint32_t ip, struct if_info_t *if_list);
 //given an IP, return the if's index if the IP is a local IP(the IP is in if_list)
-int get_ipif_local(uint32_t ip, struct if_info *if_list);
+int get_ipif_local(uint32_t ip, struct if_info_t *if_list);
 
 //return gateway or 0
-uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, struct if_info *if_list);
+uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, struct if_info_t *if_list);
 
 
 

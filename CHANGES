@@ -7,6 +7,10 @@ Todo list:
 6. IPv6
 
 
+2.0 2015-12-22
+- change header format, add src_id, dst_id and TTL into header.
+
+
 1.2.2 2015-11-14
 - support CentOS
 

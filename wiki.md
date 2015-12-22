@@ -22,10 +22,32 @@ FAQ
      Does anyone knows how to receive notification from linux kernel when IPv6 rule changes?
      There is RTMGRP_IPV4_RULE, but it seems that there is no RTMGRP_IPV6_RULE.
 
+
 DESIGN
 ------
 
-MODE=server/client/middle, difference between client and server is that client uses less memory.
+#### 1. Mode
+
+    MODE=server/client, for the ELF file, there is no difference between client and server.
+    for the shell script, the difference is that client will change the default route to point
+    to the tunnel. So be carefully, if you run with client mode on a VPS, you may lose your connection.
+
+#### 2. Sequence number
+
+    The sequence in the header can be as large as 2^24, which means 16Mpps packet rate, or 
+    1GB/s to 24GB/s (64byte to 1500byte) rate. Using bit vector to store the sequence, for
+    one second, it's 2M byte memory, and two seconds is 4M. If there are 100 peers, this is
+    400M memory, which is too large. So I'd like to use a smaller bit vector to store a smaller
+    sequence, such as 2^16, 4kpps. This value can be adjusted accordingly. If the seqence number
+    in the packet is larger than the bit vector, just drop the packet.
+
+#### 3. NAT rule
+    Here is one thing I think that is usefull. Think a peer that has only one external server, but
+    may has several middle servers. For example, he may connect from the path client->server1->server9,
+    or client->server2->server9, or even client->server1->server2->server3->server9. If he makes sure
+    that the external server(server9 in this case) keep unchanged, then when he changes the path or
+    routes, the outside servers won't know the change. The NAT port/session will keep unchanged, so a
+    connected TCP connection will not be RST and there is no need to reconnect.
 
 
 file path:
