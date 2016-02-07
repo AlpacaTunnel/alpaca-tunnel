@@ -78,6 +78,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 Bugs and Issues
 ----------------
+It's the end of the Year of the Goat, but it's not the end of the
+alpaca tunnel.
 
 
 
