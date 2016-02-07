@@ -10,7 +10,7 @@ to use this tool but agrees with the GFW, go fuck yourself.
 Install
 -------
 
-Currently only tested on Ubuntu.
+Currently only tested on Ubuntu and CentOS.
 Download the codes and build.
 
     sudo apt-get update
@@ -21,14 +21,14 @@ Download the codes and build.
 Configuration
 -------------
 
-- Conf files are stored in `/usr/local/etc`.
-- For the client, edit `alpaca_tunnel.conf`.
-- For the server, edit `alpaca_tunnel.conf` and `alpaca_secrets`.
+- Conf files are stored in `/usr/local/etc` by default.
+- Edit Mode/ID in `alpaca_tunnel.conf`.
+- Edit server addresses and passwords in `alpaca_secrets`.
 
 AlpacaTunnel supports multiple clients with one server instance. Each server
 or client has an unique ID, such as 1.1 or 16.4. The format of the ID is just
-like the format of one half of an IP address. Note that IDs between 0.2 and
-15.255 are used for servers only. IDs from 16.1 to 255.254 are for clients.
+like the format of one half of an IP address. Note that you must allocate
+smaller IDs for servers, bigger IDs for clients.
 
 Servers and clients must have the same GROUP name.
 

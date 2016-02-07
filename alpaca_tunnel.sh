@@ -159,7 +159,7 @@ start_exe()
 
     #TUNIF must be put at the end of the cmd line, for search use.
     stdbuf -i0 -o0 -e0 nohup $EXE_PATH/$EXE_NAME -p $PORT -g $GROUP -n $SELF_ID -i $tunif | tee -a $LOGFILE &
-    sleep 0.2
+    sleep 0.3
     ps aux | grep $! | grep -v grep > /dev/null
     if [ $? == 0 ]; then
         echo "start_exe: $EXE_NAME started on port $PORT with $tunif."
@@ -274,6 +274,7 @@ serverup()
     cp -f $0 $BACKUP_SCRIPT > /dev/null
     cp -f $CONF_FILE $BACKUP_CONF > /dev/null
 
+    #if failed, don't run serverdown, let user to do it.
     start_exe $TUNIF
     [ $? != 0 ] && return 1
     return 0
@@ -337,6 +338,9 @@ clientup()
     else
         echo "****!!! warning: no default route found in routing table !!!****"
     fi
+
+    check_ip_format $TUN_GW
+    [ $? != 0 ] && echo "clientup: error, NETID or GW_ID may be wrong!" && return 1
 
     default_gw_ip=`cat $BACKUP_GW_IP`
     check_ip_format $default_gw_ip

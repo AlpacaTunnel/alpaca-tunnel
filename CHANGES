@@ -1,10 +1,14 @@
 Todo list:
 1. multi-user ---- done
 2. tcp optimization
-3. anti-replay
+3. anti-replay ----done
 4. obfuscation
 5. android/iOS
 6. IPv6
+
+2.1 2016-02-07
+- change header format, add src/dst flag
+- add anti replay
 
 
 2.0 2015-12-22
