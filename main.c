@@ -36,7 +36,7 @@ typedef enum { false, true } bool;
 #define RELATIVE_PATH_TO_SECRETS "alpaca_tunnel.d/alpaca_secrets"
 #define PATH_LEN 1024
 #define PROCESS_NAME "AlpacaTunnel"
-#define VERSION "2.0"
+#define VERSION "2.1"
 
 #define TUN_NETMASK 0xFFFF0000
 //tunnel MTU must not be greater than 1440
@@ -65,8 +65,8 @@ typedef union
 struct ttl_flag_random_t
 {
     uint ttl:4;
-    uint src_flag:1;  //0: inside; 1: outside
-    uint dst_flag:1;  //0: inside; 1: outside
+    bool src_inside:1;
+    bool dst_inside:1;
     uint random:10;
 } __attribute__((packed));
 
@@ -155,6 +155,9 @@ struct tunnel_header_t
 //so max replay rate is REPLAY_CNT_LIMIT per RESET_STAT_INTERVAL
 #define RESET_STAT_INTERVAL 30
 #define REPLAY_CNT_LIMIT 10
+#define JUMP_CNT_LIMIT 3
+
+#define ALLOW_P2P true
 
 enum {error, debug, info} global_log_level = debug;
 
@@ -174,7 +177,11 @@ struct flow_profile_t
     uint32_t time_now;
     uint64_t dup_cnt;     //if packet is duplicate, cnt++
     uint64_t delay_cnt;   //if packet is within MAX_DELAY_TIME, cnt++
-    uint64_t replay_cnt;  //if packet time is beyond MAX_DELAY_TIME, cnt++
+    uint64_t replay_cnt;  //if packet is replay, cnt++
+    uint64_t jump_cnt;  //if packet time is faster, cnt++
+    uint32_t time_min;
+    uint32_t time_max;
+    //uint32_t sys_time;
     struct bit_array_t * ba_pre;
     struct bit_array_t * ba_now;
 };
@@ -188,7 +195,7 @@ struct peer_profile_t
     bool dup;   //when set, packet will be double sent.
     uint16_t srtt;
     struct flow_profile_t * flow_src;  //for flow that dst==0, src->0
-    struct flow_profile_t * flow_dst;  //for flow that src==0, 0->dst
+    //struct flow_profile_t * flow_dst;  //for flow that src==0, 0->dst
     byte psk[2*AES_TEXT_LEN];
     struct sockaddr_in *peeraddr;   //peer IP
     int port;   //peer port
@@ -233,7 +240,7 @@ uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src);
 static int global_running = 0;
 static int global_sysroute_change = 0;
 static uint16_t global_self_id = 0;
-static int global_replay_cnt = 0;
+static int global_pkt_cnt = 0;
 
 //in network byte order.
 static struct if_info_t global_tunif;
@@ -257,6 +264,7 @@ int usage(char *pname)
 
 int main(int argc, char *argv[])
 {
+    srandom(time(NULL));
     init_route_spin();
     global_if_list = NULL;
     collect_if_info(&global_if_list);
@@ -706,8 +714,9 @@ struct peer_profile_t** init_peer(FILE *secrets_file)
         p1->rip = (global_tunif.addr & global_tunif.mask) | htonl(id); //in network byte order.
 
         p1->flow_src = (struct flow_profile_t *)malloc(sizeof(struct flow_profile_t));
-        p1->flow_dst = (struct flow_profile_t *)malloc(sizeof(struct flow_profile_t));
-        if(p1->flow_src == NULL || p1->flow_dst == NULL)
+        //p1->flow_dst = (struct flow_profile_t *)malloc(sizeof(struct flow_profile_t));
+        //if(p1->flow_src == NULL || p1->flow_dst == NULL)
+        if(p1->flow_src == NULL)
         {
             printlog(errno, "init_peer: malloc failed");
             free_peer(p2);
@@ -717,15 +726,15 @@ struct peer_profile_t** init_peer(FILE *secrets_file)
         else
         {
             bzero(p1->flow_src, sizeof(struct flow_profile_t));
-            bzero(p1->flow_dst, sizeof(struct flow_profile_t));
+            //bzero(p1->flow_dst, sizeof(struct flow_profile_t));
         }
 
         p1->flow_src->ba_pre = bit_array_create(SEQ_LEVEL_1);
         p1->flow_src->ba_now = bit_array_create(SEQ_LEVEL_1);
-        p1->flow_dst->ba_pre = bit_array_create(SEQ_LEVEL_1);
-        p1->flow_dst->ba_now = bit_array_create(SEQ_LEVEL_1);
-        if(p1->flow_src->ba_pre == NULL || p1->flow_src->ba_now == NULL
-            || p1->flow_dst->ba_pre == NULL || p1->flow_dst->ba_now == NULL)
+        //p1->flow_dst->ba_pre = bit_array_create(SEQ_LEVEL_1);
+        //p1->flow_dst->ba_now = bit_array_create(SEQ_LEVEL_1);
+        if(p1->flow_src->ba_pre == NULL || p1->flow_src->ba_now == NULL)
+        //    || p1->flow_dst->ba_pre == NULL || p1->flow_dst->ba_now == NULL)
         {
             printlog(errno, "init_peer: malloc failed");
             free_peer(p2);
@@ -734,8 +743,8 @@ struct peer_profile_t** init_peer(FILE *secrets_file)
         }
         bit_array_clearall(p1->flow_src->ba_pre);
         bit_array_clearall(p1->flow_src->ba_now);
-        bit_array_clearall(p1->flow_dst->ba_pre);
-        bit_array_clearall(p1->flow_dst->ba_now);
+        //bit_array_clearall(p1->flow_dst->ba_pre);
+        //bit_array_clearall(p1->flow_dst->ba_now);
 
         p2[id] = p1;
     }
@@ -787,12 +796,12 @@ int free_peer(struct peer_profile_t **p2)
                 bit_array_destroy(p1->flow_src->ba_now);
                 free(p1->flow_src);
             }
-            if(p1->flow_dst != NULL)
-            {
-                bit_array_destroy(p1->flow_dst->ba_pre);
-                bit_array_destroy(p1->flow_dst->ba_now);
-                free(p1->flow_dst);
-            }
+            //if(p1->flow_dst != NULL)
+            //{
+            //    bit_array_destroy(p1->flow_dst->ba_pre);
+            //    bit_array_destroy(p1->flow_dst->ba_now);
+            //    free(p1->flow_dst);
+            //}
             if(p1->peeraddr != NULL)
                 free(p1->peeraddr);
             free(p1);
@@ -958,30 +967,41 @@ void* reset_link_route(void *arg)
 void* server_reset_stat(void *arg)
 {
     struct peer_profile_t ** peer_table = (struct peer_profile_t **)arg;
-    int i;
     int peer_num = MAX_ID+1;
-    int pre = global_replay_cnt;
+    //int pre = global_pkt_cnt;
 
+    int i, j = 0;
     while(global_running)
     {
         sleep(RESET_STAT_INTERVAL);
-        if(pre != global_replay_cnt)
+        j++;
+        for(i = 0; i < peer_num; i++)
         {
-            for(i = 0; i < peer_num; i++)
+            struct peer_profile_t *p = peer_table[i];
+            if(p != NULL)
             {
-                struct peer_profile_t *p = peer_table[i];
-                if(p != NULL)
+                //if(pre != global_pkt_cnt)
+                if(true)
                 {
                     p->flow_src->dup_cnt = 0;
                     p->flow_src->delay_cnt = 0;
                     p->flow_src->replay_cnt = 0;
-                    p->flow_dst->dup_cnt = 0;
-                    p->flow_dst->delay_cnt = 0;
-                    p->flow_dst->replay_cnt = 0;
+                    //p->flow_src->sys_time = time(NULL);
+                    p->flow_src->time_min = 0;
+                    p->flow_src->time_max = 0;
+                    //p->flow_dst->dup_cnt = 0;
+                    //p->flow_dst->delay_cnt = 0;
+                    //p->flow_dst->replay_cnt = 0;
+                    //printlog(0, "status count reset!\n");
+                    //pre = global_pkt_cnt;
+                }
+                if(j%4 == 0 && p->flow_src->jump_cnt > 0)
+                {
+                    j++;
+                    p->flow_src->jump_cnt = 0;
+                    printlog(0, "jump status count reset!\n");
                 }
             }
-            printlog(0, "replay count reset!\n");
-            pre = global_replay_cnt;
         }
     }
     return NULL;
@@ -1004,7 +1024,6 @@ void* server_read(void *arg)
     byte buf_header[HEADER_LEN];
     byte * buf_psk;
     int i;
-    srandom(time(NULL));
     for(i=0; i<ETH_MTU; i++)   //set random padding data
         buf_send[i] = random();
     bzero(buf_load, TUN_MTU);
@@ -1057,26 +1076,26 @@ void* server_read(void *arg)
 
         if(src_inside)
         {
-            header_send.ttl_flag_random.bit.src_flag = 0;
+            header_send.ttl_flag_random.bit.src_inside = true;
             //now src_id == global_self_id; but in the future, src_id may be other peer's id.
             src_id = ntohl(ip_h.saddr);
             ip_snat(buf_load, peer_table[src_id]->vip);
         }
         else
         {
-            header_send.ttl_flag_random.bit.src_flag = 1;
+            header_send.ttl_flag_random.bit.src_inside = false;
             //src_id = 0;
         }
 
         if(dst_inside)
         {
-            header_send.ttl_flag_random.bit.dst_flag = 0;
+            header_send.ttl_flag_random.bit.dst_inside = true;
             dst_id = ntohl(ip_h.daddr);
             ip_dnat(buf_load, peer_table[dst_id]->vip);
         }
         else
         {
-            header_send.ttl_flag_random.bit.dst_flag = 1;
+            header_send.ttl_flag_random.bit.dst_inside = false;
             dst_id = next_id;
         }
         bigger_id = dst_id > src_id ? dst_id : src_id;
@@ -1226,6 +1245,9 @@ void* server_recv(void *arg)
         if(fs == -2)
             printlog(0, "tunif %s received packet from %d.%d to %d.%d: replay limit exceeded!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
+        if(fs == -3)
+            printlog(0, "tunif %s received packet from %d.%d to %d.%d: time jump limit exceeded!\n", 
+                global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
         if(fs < 0)
             continue;
 
@@ -1240,7 +1262,7 @@ void* server_recv(void *arg)
 
         //if(0 != src_id)
         //src_inside
-        if(header_recv.ttl_flag_random.bit.src_flag == 0)
+        if(header_recv.ttl_flag_random.bit.src_inside == true)
         {
             saddr = (global_tunif.addr & global_tunif.mask) | ip_h.saddr;
             ip_snat(buf_load, saddr);
@@ -1250,7 +1272,7 @@ void* server_recv(void *arg)
 
         //if(0 != dst_id)
         //dst_inside
-        if(header_recv.ttl_flag_random.bit.dst_flag == 0)
+        if(header_recv.ttl_flag_random.bit.dst_inside == true)
         {
             daddr = (global_tunif.addr & global_tunif.mask) | ip_h.daddr;
             ip_dnat(buf_load, daddr);
@@ -1289,27 +1311,36 @@ void* server_recv(void *arg)
                 continue;
             }
 
+            if(ALLOW_P2P != true)
+                if(header_recv.ttl_flag_random.bit.src_inside == true && header_recv.ttl_flag_random.bit.dst_inside == true)
+                {
+                    printlog(0, "tunif %s received packet from %d.%d to %d.%d: p2p not allowed!\n", 
+                        global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
+                    continue;
+                }
+
             //if(dst_id != 0)
             //    next_id = dst_id;
 
             if(NULL == peer_table[next_id])
             {
-                printlog(0, "tunif %s recv packet to peer %d.%d: invalid peer!\n", 
-                    global_tunif.name, next_id/256, next_id%256);
+                printlog(0, "tunif %s recv packet from %d.%d to %d.%d: route to invalid next peer: %d.%d!\n", 
+                    global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, next_id/256, next_id%256);
                 continue;
             }
             if(NULL == peer_table[next_id]->peeraddr)
             {
-                printlog(0, "tunif %s recv packet to peer %d.%d: invalid addr!\n", 
-                    global_tunif.name, next_id/256, next_id%256);
+                printlog(0, "tunif %s recv packet from %d.%d to %d.%d: route to next peer %d.%d: invalid addr!\n", 
+                    global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, next_id/256, next_id%256);
                 continue;
             }
 
             //split horizon
             //i don't want to compare port here, thus prevent two peers in the same NAT gw from seeing each other.
-            if(peeraddr->sin_addr.s_addr == peer_table[next_id]->peeraddr->sin_addr.s_addr)
+            if(peeraddr->sin_addr.s_addr == peer_table[next_id]->peeraddr->sin_addr.s_addr &&
+                peeraddr->sin_port == peer_table[next_id]->peeraddr->sin_port)
             {
-                printlog(0, "tunif %s recv packet from %d.%d to %d.%d, next_id is %d.%d: dst addr equals src addr!\n", 
+                printlog(0, "tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!\n", 
                     global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, next_id/256, next_id%256);
                 continue;
             }
@@ -1318,8 +1349,8 @@ void* server_recv(void *arg)
 
             ttl--;
             header_send.ttl_flag_random.bit.ttl = ttl;
-            header_send.ttl_flag_random.bit.src_flag = header_recv.ttl_flag_random.bit.src_flag;
-            header_send.ttl_flag_random.bit.dst_flag = header_recv.ttl_flag_random.bit.dst_flag;
+            header_send.ttl_flag_random.bit.src_inside = header_recv.ttl_flag_random.bit.src_inside;
+            header_send.ttl_flag_random.bit.dst_inside = header_recv.ttl_flag_random.bit.dst_inside;
             header_send.ttl_flag_random.bit.random = random();
             header_send.ttl_flag_random.u16 = htons(header_send.ttl_flag_random.u16);
 
@@ -1339,11 +1370,14 @@ void* server_recv(void *arg)
     return NULL;
 }
 
+//need to filter 2 elements:pkt_time and pkt_seq;
+//pkt_time can NOT run too fast, if faster than system, let's call it a jump. if too many jumps, then it may be an attack.
+//pkt_seq can NOT duplicate.
 int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, struct peer_profile_t ** peer_table)
 {
+    global_pkt_cnt++;
     struct flow_profile_t * fp = NULL;
 
-    //only need to protect smaller id, so there is no need of peer_table[dst_id]->flow_dst
     if(src_id == dst_id || 0 == src_id)
         return -1;
     else if(NULL == peer_table[src_id])
@@ -1353,6 +1387,25 @@ int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t d
 
     if(fp == NULL)
         return -1;
+
+    if(fp->time_min == 0)
+        fp->time_min = pkt_time;
+    else
+        fp->time_min = pkt_time < fp->time_min ? pkt_time : fp->time_min;
+    if(fp->time_max == 0)
+        fp->time_max = pkt_time;
+    else
+        fp->time_max = pkt_time > fp->time_max ? pkt_time : fp->time_max;
+    if( (fp->time_max - fp->time_min) > (RESET_STAT_INTERVAL + MAX_DELAY_TIME) )
+    {
+        fp->jump_cnt++;
+        fp->time_max = 0;
+        fp->time_min = 0;
+        if(fp->jump_cnt == JUMP_CNT_LIMIT)
+            return -3;
+    }
+    if(fp->jump_cnt >= JUMP_CNT_LIMIT)
+        return -4;
 
     int time_diff = pkt_time - fp->time_now;
     if(time_diff >= 2)
@@ -1401,7 +1454,7 @@ int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t d
     else if(time_diff <= -MAX_DELAY_TIME) //why? let's assume max packet delay is MAX_DELAY_TIME seconds.
     {
         fp->replay_cnt++;
-        global_replay_cnt++;
+        //global_pkt_cnt++;
         if(fp->replay_cnt == REPLAY_CNT_LIMIT)  //if replay_cnt is beyond REPLAY_CNT_LIMIT, drop replay packets.
             return -2;
         if(fp->replay_cnt > REPLAY_CNT_LIMIT)
