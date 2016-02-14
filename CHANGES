@@ -7,6 +7,10 @@ Todo list:
 6. IPv6
 
 
+2.1.2 2016-02-14
+- anti replay: bug fix, deny peers that involved too many times
+
+
 2.1.1 2016-02-11
 - anti replay: bug fix, deny pkt_time run too fast
 
@@ -17,7 +21,7 @@ Todo list:
 
 
 2.0 2015-12-22
-- change header format, add src_id, dst_id and TTL into header.
+- change header format, add src_id, dst_id and TTL into header
 
 
 1.2.2 2015-11-14

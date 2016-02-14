@@ -36,7 +36,7 @@ typedef enum { false, true } bool;
 #define RELATIVE_PATH_TO_SECRETS "alpaca_tunnel.d/alpaca_secrets"
 #define PATH_LEN 1024
 #define PROCESS_NAME "AlpacaTunnel"
-#define VERSION "2.1"
+#define VERSION "2.1.2"
 
 #define TUN_NETMASK 0xFFFF0000
 //tunnel MTU must not be greater than 1440
@@ -156,6 +156,7 @@ struct tunnel_header_t
 #define RESET_STAT_INTERVAL 30
 #define REPLAY_CNT_LIMIT 10
 #define JUMP_CNT_LIMIT 3
+#define INVOLVE_CNT_LIMIT 3
 
 #define ALLOW_P2P true
 
@@ -195,6 +196,7 @@ struct peer_profile_t
     bool dup;   //when set, packet will be double sent.
     uint16_t srtt;
     struct flow_profile_t * flow_src;  //for flow that dst==0, src->0
+    uint64_t involve_cnt; //if dst_id let src_id replayed or jumped, dst_id cnt++; avoid bigger_id attach others
     //struct flow_profile_t * flow_dst;  //for flow that src==0, 0->dst
     byte psk[2*AES_TEXT_LEN];
     struct sockaddr_in *peeraddr;   //peer IP
@@ -1194,7 +1196,7 @@ void* server_recv(void *arg)
         src_id = ntohs(header_recv.src_id);
         bigger_id = dst_id > src_id ? dst_id : src_id;
 
-        if(NULL == peer_table[bigger_id])
+        if(NULL == peer_table[bigger_id] || peer_table[bigger_id]->valid == false)
         {
             printlog(0, "tunif %s received packet from %d.%d to %d.%d: invalid peer: %d.%d!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, bigger_id/256, bigger_id%256);
@@ -1245,9 +1247,23 @@ void* server_recv(void *arg)
         if(fs == -2)
             printlog(0, "tunif %s received packet from %d.%d to %d.%d: replay limit exceeded!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
+        if(fs == -6)
+        {
+            printlog(0, "tunif %s received packet from %d.%d to %d.%d: replay limit exceeded!\n", 
+                global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
+            printlog(0, "tunif %s set peer %d.%d to invalid: involve limit exceeded!\n", 
+                global_tunif.name, dst_id/256, dst_id%256);
+        }
         if(fs == -3)
             printlog(0, "tunif %s received packet from %d.%d to %d.%d: time jump limit exceeded!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
+        if(fs == -5)
+        {
+            printlog(0, "tunif %s received packet from %d.%d to %d.%d: time jump limit exceeded!\n", 
+                global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
+            printlog(0, "tunif %s set peer %d.%d to invalid: involve limit exceeded!\n", 
+                global_tunif.name, dst_id/256, dst_id%256);
+        }
         if(fs < 0)
             continue;
 
@@ -1282,6 +1298,14 @@ void* server_recv(void *arg)
         {
             daddr = ip_h.daddr;
             next_id = get_next_hop_id(daddr, saddr);
+        }
+
+        bool dst_inside = ((daddr & global_tunif.mask) == (global_tunif.addr & global_tunif.mask));
+        if(header_recv.ttl_flag_random.bit.dst_inside == false && dst_inside == true)
+        {
+            printlog(0, "tunif %s received packet from %d.%d to %d.%d: probe packet, drop it!\n", 
+                global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
+            continue;
         }
 
         if(0 == next_id)
@@ -1385,7 +1409,7 @@ int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t d
     else
         fp = peer_table[src_id]->flow_src;
 
-    if(fp == NULL)
+    if(peer_table[src_id] == NULL || peer_table[dst_id] == NULL)
         return -1;
 
     if(fp->time_min == 0)
@@ -1402,7 +1426,18 @@ int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t d
         fp->time_max = 0;
         fp->time_min = 0;
         if(fp->jump_cnt == JUMP_CNT_LIMIT)
+        {
+            if(src_id < dst_id)
+            {
+                peer_table[dst_id]->involve_cnt++;
+                if(peer_table[dst_id]->involve_cnt > INVOLVE_CNT_LIMIT)
+                {
+                    peer_table[dst_id]->valid = false;
+                    return -5;
+                }
+            }
             return -3;
+        }
     }
     if(fp->jump_cnt >= JUMP_CNT_LIMIT)
         return -4;
@@ -1456,7 +1491,18 @@ int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t d
         fp->replay_cnt++;
         //global_pkt_cnt++;
         if(fp->replay_cnt == REPLAY_CNT_LIMIT)  //if replay_cnt is beyond REPLAY_CNT_LIMIT, drop replay packets.
+        {
+            if(src_id < dst_id)
+            {
+                peer_table[dst_id]->involve_cnt++;
+                if(peer_table[dst_id]->involve_cnt > INVOLVE_CNT_LIMIT)
+                {
+                    peer_table[dst_id]->valid = false;
+                    return -6;
+                }
+            }
             return -2;
+        }
         if(fp->replay_cnt > REPLAY_CNT_LIMIT)
             return -1;
         bit_array_clearall(fp->ba_pre);
@@ -1471,9 +1517,7 @@ int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t d
         return -1;
     }
 
-    if(fp->replay_cnt == REPLAY_CNT_LIMIT)  //if replay_cnt is beyond REPLAY_CNT_LIMIT, drop replay packets.
-        return -2;
-    if(fp->replay_cnt > REPLAY_CNT_LIMIT)
+    if(fp->replay_cnt >= REPLAY_CNT_LIMIT)
         return -1;
     return 0;
 }
