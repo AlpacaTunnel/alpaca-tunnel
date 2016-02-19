@@ -36,7 +36,7 @@ typedef enum { false, true } bool;
 #define RELATIVE_PATH_TO_SECRETS "alpaca_tunnel.d/alpaca_secrets"
 #define PATH_LEN 1024
 #define PROCESS_NAME "AlpacaTunnel"
-#define VERSION "2.1.2"
+#define VERSION "2.1.3"
 
 #define TUN_NETMASK 0xFFFF0000
 //tunnel MTU must not be greater than 1440
@@ -243,6 +243,7 @@ static int global_running = 0;
 static int global_sysroute_change = 0;
 static uint16_t global_self_id = 0;
 static int global_pkt_cnt = 0;
+static pthread_spinlock_t global_stat_spin;
 
 //in network byte order.
 static struct if_info_t global_tunif;
@@ -267,7 +268,13 @@ int usage(char *pname)
 int main(int argc, char *argv[])
 {
     srandom(time(NULL));
-    init_route_spin();
+    if(init_route_spin() < 0)
+        return -1;
+    if(pthread_spin_init(&global_stat_spin, PTHREAD_PROCESS_PRIVATE) != 0)
+    {
+        perror("pthread_spin_init");
+        return -1;
+    }
     global_if_list = NULL;
     collect_if_info(&global_if_list);
     global_ipv4_mask_fragoff = htons(IPV4_MASK_FRAGOFF);
@@ -475,6 +482,7 @@ _END:
     clear_if_info(global_if_list);
     global_if_list = NULL;
     destroy_route_spin();
+    pthread_spin_destroy(&global_stat_spin);
     free_peer(peer_table);
     peer_table = NULL;
     //free(peer_table);
@@ -982,6 +990,11 @@ void* server_reset_stat(void *arg)
             struct peer_profile_t *p = peer_table[i];
             if(p != NULL)
             {
+                if(pthread_spin_lock(&global_stat_spin) != 0)
+                {
+                    perror("pthread_spin_lock");
+                    continue;
+                }
                 //if(pre != global_pkt_cnt)
                 if(true)
                 {
@@ -997,11 +1010,16 @@ void* server_reset_stat(void *arg)
                     //printlog(0, "status count reset!\n");
                     //pre = global_pkt_cnt;
                 }
-                if(j%4 == 0 && p->flow_src->jump_cnt > 0)
+                if(j%4 == 0 && p->flow_src->jump_cnt > 0)  //why 4? no why, it can be 5,6,7...100, any
                 {
                     j++;
                     p->flow_src->jump_cnt = 0;
                     printlog(0, "jump status count reset!\n");
+                }
+                if(pthread_spin_unlock(&global_stat_spin) != 0)
+                {
+                    perror("pthread_spin_unlock");
+                    continue;
                 }
             }
         }
@@ -1072,7 +1090,7 @@ void* server_read(void *arg)
         }
         else if(!dst_inside && !src_inside) //not supported now: outside IP to outside IP
         {
-            printlog(0, "tunif %s read packet from unknown net to unknown net, ignore it!\n", global_tunif.name);
+            printlog(0, "tunif %s read packet from outside net to outside net, ignore it!\n", global_tunif.name);
             continue;
         }  
 
@@ -1086,7 +1104,7 @@ void* server_read(void *arg)
         else
         {
             header_send.ttl_flag_random.bit.src_inside = false;
-            //src_id = 0;
+            src_id = 0;
         }
 
         if(dst_inside)
@@ -1243,7 +1261,17 @@ void* server_recv(void *arg)
         uint32_t pkt_seq = header_recv.seq_frag_off.bit.seq;
         //printf("pkt_time: %d\n", pkt_time);
         //printf("pkt_seq : %d\n", pkt_seq);
+        if(pthread_spin_lock(&global_stat_spin) != 0)
+        {
+            perror("pthread_spin_lock");
+            continue;
+        }
         int fs = flow_filter(pkt_time, pkt_seq, src_id, dst_id, peer_table);
+        if(pthread_spin_unlock(&global_stat_spin) != 0)
+        {
+            perror("pthread_spin_unlock");
+            continue;
+        }
         if(fs == -2)
             printlog(0, "tunif %s received packet from %d.%d to %d.%d: replay limit exceeded!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
@@ -1399,6 +1427,7 @@ void* server_recv(void *arg)
 //pkt_seq can NOT duplicate.
 int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, struct peer_profile_t ** peer_table)
 {
+    //there should be an spin lock
     global_pkt_cnt++;
     struct flow_profile_t * fp = NULL;
 

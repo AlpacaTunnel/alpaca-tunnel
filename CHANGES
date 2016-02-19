@@ -7,6 +7,10 @@ Todo list:
 6. IPv6
 
 
+2.1.3 2016-02-19
+- anti replay: bug fix, add spin lock
+
+
 2.1.2 2016-02-14
 - anti replay: bug fix, deny peers that involved too many times
 
