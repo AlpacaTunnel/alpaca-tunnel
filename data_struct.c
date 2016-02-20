@@ -1,4 +1,4 @@
-#include "bitmap.h"
+#include "data_struct.h"
 #include <stdlib.h>
 #include <strings.h>
 
@@ -96,4 +96,33 @@ int bit_array_get(struct bit_array_t *ba, uint32_t index)
     int v = (ba->array[array_index] >> bit_index) & 1 ;
 
     return v;
+}
+
+int binary_search(const uint32_t arr[], int start, int end, int key)
+{
+    int mid;
+    while (start <= end) 
+    {
+        mid = start + (end - start) / 2;
+        if (arr[mid] < key)
+            start = mid + 1;
+        else if (arr[mid] > key)
+            end = mid - 1;
+        else
+            return mid;
+    }
+    return -1;
+}
+
+void bubble_sort(uint32_t arr[], int len)
+{
+    uint32_t i, j, temp;
+    for (i = 0; i < len-1; i++)
+        for (j = 0; j < len-1-i; j++)
+            if (arr[j] > arr[j+1])
+            {
+                temp = arr[j];
+                arr[j] = arr[j+1];
+                arr[j+1] = temp;
+            }
 }

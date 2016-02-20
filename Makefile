@@ -1,5 +1,5 @@
 all:
-	gcc -std=gnu99 main.c aes.c route.c bitmap.c -lpthread -o AlpacaTunnel -Wall -O3
+	gcc -std=gnu99 main.c aes.c route.c data_struct.c -lpthread -o AlpacaTunnel -Wall -O3
 
 clean:
 	rm -f AlpacaTunnel

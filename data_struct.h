@@ -1,5 +1,5 @@
-#ifndef BIT_ARRAY_H_
-#define BIT_ARRAY_H_
+#ifndef DATA_STRUCT_H_
+#define DATA_STRUCT_H_
 
 #include <stdint.h>
 
@@ -27,5 +27,7 @@ int bit_array_set(struct bit_array_t *ba, uint32_t index);
 int bit_array_clear(struct bit_array_t *ba, uint32_t index);
 int bit_array_get(struct bit_array_t *ba, uint32_t index);
 
+int binary_search(const uint32_t arr[], int start, int end, int key);
+void bubble_sort(uint32_t arr[], int len);
 
 #endif

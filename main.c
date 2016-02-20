@@ -1,6 +1,6 @@
 #include "aes.h"
 #include "route.h"
-#include "bitmap.h"
+#include "data_struct.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -36,7 +36,7 @@ typedef enum { false, true } bool;
 #define RELATIVE_PATH_TO_SECRETS "alpaca_tunnel.d/alpaca_secrets"
 #define PATH_LEN 1024
 #define PROCESS_NAME "AlpacaTunnel"
-#define VERSION "2.1.3"
+#define VERSION "2.1.4"
 
 #define TUN_NETMASK 0xFFFF0000
 //tunnel MTU must not be greater than 1440
@@ -159,6 +159,7 @@ struct tunnel_header_t
 #define INVOLVE_CNT_LIMIT 3
 
 #define ALLOW_P2P true
+#define CHECK_RESTRICTED_IP true
 
 enum {error, debug, info} global_log_level = debug;
 
@@ -258,6 +259,8 @@ static byte global_buf_group_psk[2*AES_TEXT_LEN] = "FUCKnimadeGFW!";
 static int global_tunfd, global_sockfd;
 static uint32_t global_local_time;
 static uint32_t global_local_seq;
+static uint32_t* global_trusted_ip = NULL;
+static int global_trusted_ip_cnt = 0;
 
 int usage(char *pname)
 {
@@ -607,12 +610,26 @@ struct peer_profile_t** init_peer(FILE *secrets_file)
     if(NULL == secrets_file)
         return NULL;
 
+    if(CHECK_RESTRICTED_IP)
+    {
+        global_trusted_ip = (uint32_t *)malloc((MAX_ID+1) * sizeof(uint32_t));;
+        if(global_trusted_ip == NULL)
+        {
+            printlog(errno, "init_peer: malloc failed");
+            return NULL;
+        }
+        else
+            bzero(global_trusted_ip, (MAX_ID+1) * sizeof(uint32_t));
+    }
+
     int i;
     int peer_num = MAX_ID+1;
     struct peer_profile_t ** p2 = (struct peer_profile_t **)malloc((MAX_ID+1) * sizeof(struct peer_profile_t*));
     if(p2 == NULL)
     {
         printlog(errno, "init_peer: malloc failed");
+        free_peer(p2);
+        p2 = NULL;
         return NULL;
     }
     else
@@ -711,6 +728,11 @@ struct peer_profile_t** init_peer(FILE *secrets_file)
                 peeraddr->sin_family = AF_INET;
                 peeraddr->sin_port = htons(p1->port);
                 p1->restricted = true;
+                if(CHECK_RESTRICTED_IP)
+                {
+                    global_trusted_ip[global_trusted_ip_cnt] = peeraddr->sin_addr.s_addr;
+                    global_trusted_ip_cnt++;
+                }
             }
         }
         p1->peeraddr = peeraddr;
@@ -770,6 +792,8 @@ struct peer_profile_t** init_peer(FILE *secrets_file)
 
     //p1->peeraddr = peeraddr;
     //p2[0] = p1;
+    if(CHECK_RESTRICTED_IP)
+        bubble_sort(global_trusted_ip, global_trusted_ip_cnt);
 
     return p2;
 }
@@ -789,6 +813,9 @@ int shrink_line(char *line)
 
 int free_peer(struct peer_profile_t **p2)
 {
+    if(CHECK_RESTRICTED_IP && global_trusted_ip != NULL)
+        free(global_trusted_ip);
+
     if(NULL == p2)
         return 0;
 
@@ -1104,7 +1131,7 @@ void* server_read(void *arg)
         else
         {
             header_send.ttl_flag_random.bit.src_inside = false;
-            src_id = 0;
+            src_id = global_self_id;
         }
 
         if(dst_inside)
@@ -1165,7 +1192,7 @@ void* server_read(void *arg)
         len_pad = (len_load > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
         if(sendto(global_sockfd, buf_send, HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN + len_pad,
             0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
-            printlog(errno, "tunif %s sendto socket error", global_tunif.name);
+            printlog(errno, "tunif %s sendto next_id %d.%d socket error", global_tunif.name, next_id/256, next_id%256);
     }
 
     free(peeraddr);
@@ -1227,11 +1254,12 @@ void* server_recv(void *arg)
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
             continue;
         }
-        if(peer_table[src_id] != NULL && peer_table[src_id]->restricted == true)
+        if(CHECK_RESTRICTED_IP && peer_table[src_id] != NULL && peer_table[src_id]->restricted == true)
         {
-            if(dst_id != global_self_id && peer_table[src_id]->peeraddr->sin_addr.s_addr != peeraddr->sin_addr.s_addr)
+            //if dst_id == global_self_id, don't ckeck but write to tunif
+            if(dst_id != global_self_id && binary_search(global_trusted_ip, 0, global_trusted_ip_cnt, peeraddr->sin_addr.s_addr) == -1)
             {
-                printlog(0, "tunif %s received packet from %d.%d to %d.%d: src_id addr not match!\n", 
+                printlog(0, "tunif %s received packet from %d.%d to %d.%d: src_id addr not trusted!\n", 
                     global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
                 continue;
             }
@@ -1413,7 +1441,7 @@ void* server_recv(void *arg)
             int len_pad = (len_load > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
             if(sendto(global_sockfd, buf_recv, HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN + len_pad,
                 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
-                printlog(errno, "tunif %s sendto socket error", global_tunif.name);
+                printlog(errno, "tunif %s sendto next_id %d.%d socket error", global_tunif.name, next_id/256, next_id%256);
             continue;
         }
     }
