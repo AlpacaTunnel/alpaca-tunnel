@@ -19,6 +19,7 @@ struct bit_array_t
 struct bit_array_t* bit_array_create(uint32_t size);
 //must call at the end
 int bit_array_destroy(struct bit_array_t *ba);
+int bit_array_copy(struct bit_array_t *dst, struct bit_array_t *src);
 
 int bit_array_clearall(struct bit_array_t *ba);
 int bit_array_setall(struct bit_array_t *ba);

@@ -6,6 +6,11 @@ Todo list:
 5. android/iOS
 6. IPv6
 
+2.2 2016-02-27
+- divide some parts to log.c secret.c ip.c
+- reload peer when secret file changed
+- support domain name in secret file
+
 
 2.1.4 2016-02-20
 - anti replay: bug fix, add trusted ip

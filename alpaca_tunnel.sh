@@ -6,8 +6,6 @@ EXE_NAME=AlpacaTunnel
 TUN_PREFIX=alptun
 TUN_MASK=16
 HEADER_LEN=60  #20+8+32, IP+UDP+AlpacaHeader
-BACKUP_GW_IP=/tmp/alpaca_tunnel_gw_ip
-BACKUP_GW_DEV=/tmp/alpaca_tunnel_gw_dev
 LOGFILE=/var/log/alpaca_tunnel.log
 
 CUR_DIR=$(cd `dirname $0` && pwd -P)
@@ -40,6 +38,10 @@ BACKUP_PATH=/tmp/running_backup_$TUNIF
 mkdir -p $BACKUP_PATH
 BACKUP_SCRIPT=$BACKUP_PATH/alpaca_tunnel.sh
 BACKUP_CONF=$BACKUP_PATH/alpaca_tunnel.conf
+BACKUP_SERVER_LIST_FILE=$BACKUP_PATH/server_list
+BACKUP_GW_IP=/$BACKUP_PATH/phy_gw_ip
+BACKUP_GW_DEV=/$BACKUP_PATH/phy_gw_dev
+
 TCPMSS=$((TUN_MTU-60))
 
 usage()
@@ -292,14 +294,19 @@ serverdown()
 
     default_gw_dev=`cat $BACKUP_GW_DEV`
     [ "$default_gw_dev" != "" ] && iptables -t nat -D POSTROUTING -s $TUN_IP/$TUN_MASK -o $default_gw_dev -j MASQUERADE
-    rm -rf $BACKUP_PATH > /dev/null
 
     del_tunif $TUNIF
     [ $? != 0 ] && return 1
+
+    rm -rf $BACKUP_PATH > /dev/null
+    return 0
 }
 
 clientup()
 {
+    check_ip_format $TUN_GW
+    [ $? != 0 ] && echo "clientup: error, NETID or GW_ID may be wrong!" && return 1
+
     check_tun_name $TUNIF
     [ $? != 0 ] && echo "clientup: $TUNIF already exists, nothing to do!" && return 0
 
@@ -308,12 +315,33 @@ clientup()
     add_tunif $TUNIF
     [ $? != 0 ] && return 1
 
+    #must start exe first, then change default to tunif, otherwise exe cann't do nslookup
+    start_exe $TUNIF
+    [ $? != 0 ] && return 1
+
     iptables -A FORWARD -p tcp --syn -s $TUN_IP/$TUN_MASK -j TCPMSS --set-mss $TCPMSS
     cp -f $0 $BACKUP_SCRIPT > /dev/null
     cp -f $CONF_FILE $BACKUP_CONF > /dev/null
 
     iplist=`ip addr show | grep inet | awk '{print $2}' | awk -F/ '{print $1}'`
     server_list=`cat $SECRET_FILE | sed -r "s/^\s+//g" | grep -v -e "^#" | awk '{print $3}' | grep -v -e "^$"`
+
+    for server in $server_list; do
+        check_ip_format $server
+        if [ $? == 0 ]; then
+            echo $server >> $BACKUP_SERVER_LIST_FILE
+        else
+            ip=`nslookup $server`
+            if [ $? != 0 ]; then
+                echo "server name $server lookup failed, check your server address."
+            else
+                server=`echo $ip | awk '{print $NF}'`
+                echo $server >> $BACKUP_SERVER_LIST_FILE
+            fi
+        fi
+    done
+    server_list=`cat $BACKUP_SERVER_LIST_FILE`
+
     for server in $server_list; do
         for ip in $iplist; do
             [ $server == $ip ] && echo "warning: check if this is server, don't run client on a server!"
@@ -339,9 +367,6 @@ clientup()
         echo "****!!! warning: no default route found in routing table !!!****"
     fi
 
-    check_ip_format $TUN_GW
-    [ $? != 0 ] && echo "clientup: error, NETID or GW_ID may be wrong!" && return 1
-
     default_gw_ip=`cat $BACKUP_GW_IP`
     check_ip_format $default_gw_ip
     if [ $? != 0 ]; then 
@@ -355,8 +380,6 @@ clientup()
         ip route add $DNS_ADDR_CN/32 via $default_gw_ip table default
     fi
 
-    start_exe $TUNIF
-    [ $? != 0 ] && return 1
     return 0
 }
 
@@ -369,11 +392,12 @@ clientdown()
     [ $? != 0 ] && return 1
 
     iptables -D FORWARD -p tcp --syn -s $TUN_IP/$TUN_MASK -j TCPMSS --set-mss $TCPMSS
-    rm -rf $BACKUP_PATH > /dev/null
 
     [ ! -r $SECRET_FILE ] && echo "clientdown: warning, secret file not available!"
     iplist=`ip addr show | grep inet | awk '{print $2}' | awk -F/ '{print $1}'`
-    server_list=`cat $SECRET_FILE | sed -r "s/^\s+//g" | grep -v -e "^#" | awk '{print $3}' | grep -v -e "^$"`
+    
+    server_list=`cat $BACKUP_SERVER_LIST_FILE`
+    #server_list=`cat $SECRET_FILE | sed -r "s/^\s+//g" | grep -v -e "^#" | awk '{print $3}' | grep -v -e "^$"`
     for server in $server_list; do
         for ip in $iplist; do
             [ $server == $ip ] && echo "warning: check if this is server, don't run client on a server!"
@@ -395,6 +419,8 @@ clientdown()
 
     del_tunif $TUNIF
     [ $? != 0 ] && return 1
+
+    rm -rf $BACKUP_PATH > /dev/null
     return 0
 }
 
