@@ -6,6 +6,11 @@ Todo list:
 5. android/iOS
 6. IPv6
 
+
+2.3 2016-03-07
+- separate server_read/server_recv to server_write and server_send
+
+
 2.2 2016-02-27
 - divide some parts to log.c secret.c ip.c
 - reload peer when secret file changed

@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <ifaddrs.h>
+//#include <sys/time.h>
 
 #define NLMSG_TAIL(nmsg) ((struct rtattr *) (((void *) (nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))
 
@@ -44,6 +45,26 @@ int destroy_route_spin()
             return -1;
         }
         route_spin_inited = 0;
+    }
+    return 0;
+}
+
+int lock_route_spin()
+{
+    if(pthread_spin_lock(&route_spin) != 0)
+    {
+        printlog(errno, "pthread_spin_lock");
+        return -1;
+    }
+    return 0;
+}
+
+int unlock_route_spin()
+{
+    if(pthread_spin_unlock(&route_spin) != 0)
+    {
+        printlog(errno, "pthread_spin_unlock");
+        return -1;
     }
     return 0;
 }
@@ -98,17 +119,17 @@ int add_route(uint16_t next_hop_id, uint32_t ip_dst, uint32_t ip_src)
 
 uint16_t get_route(uint32_t ip_dst, uint32_t ip_src)
 {
-    //struct timeval stop, start;
-    //gettimeofday(&start, NULL);
+    //struct timespec start, stop;
+    //clock_gettime(CLOCK_REALTIME, &start);
 
     int i;
     for(i = rt_tb_index; i != (rt_tb_index+1) % RT_TB_SIZE; i = (i-1+RT_TB_SIZE) % RT_TB_SIZE)
         if(ip_dst == route_table[i].ip_dst && ip_src == route_table[i].ip_src)
             return route_table[i].next_hop_id;
         
-    //gettimeofday(&stop, NULL);
+    //clock_gettime(CLOCK_REALTIME, &stop);
     //printf("took %lu\n", stop.tv_sec - start.tv_sec);
-    //printf("took %lu\n", stop.tv_usec - start.tv_usec);
+    //printf("took %lu\n", stop.tv_nsec - start.tv_nsec);
     
     //if not found, return 0
     return 0;

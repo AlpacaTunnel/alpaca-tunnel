@@ -22,7 +22,7 @@
     typedef enum { false, true } bool;
 #endif
 
-#define VERSION "2.2"
+#define VERSION "2.3"
 #define GLOBAL_LOG_LEVEL INFO_LEVEL
 
 //custom specified path: first. (not available now.)
@@ -45,11 +45,8 @@
 #define AES_KEY_LEN 128
 #define DEFAULT_PORT 1984
 
-#define WRITE_BUF_SIZE 50000000
-#define SEND_BUF_SIZE 50000000
-
-#define MAX_ID 65535
 //reserved ID: 0.0, 0.1, 255.255, any server/client cann't use.
+#define MAX_ID 65535
 
 #define MAX_DELAY_TIME 10  //max delay 10 seconds.
 
@@ -63,6 +60,33 @@
 #define ALLOW_P2P true
 #define CHECK_RESTRICTED_IP true
 
+//numbers of packets, let's set it 20000 = 00.2*SEQ_LEVEL_1, store 20-milliseconds packets at full speed.
+//ocupy about 2*20000*1500 = 60M memory, allow max speed of about 1M/s TCP-ACK packets.
+//but if don't store sent/wrote packets, 200 is enough for inter-threads buffer with 100Mbps speed.
+#define WRITE_BUF_SIZE 200
+#define SEND_BUF_SIZE  200
+
+struct packet_profile_t
+{
+    uint16_t src_id;
+    uint16_t dst_id;
+    int send_fd;
+    int write_fd;
+    int len;
+    struct sockaddr_in * dst_addr;
+    byte * buf_packet;
+};
+
+static struct packet_profile_t * global_write_buf = NULL;
+static struct packet_profile_t * global_send_buf  = NULL;
+static int global_write_first = 0;
+static int global_write_last  = 0;
+static int global_send_first  = 0;
+static int global_send_last   = 0;
+static pthread_mutex_t global_write_mutex;
+static pthread_mutex_t global_send_mutex;
+static pthread_cond_t  global_write_cond;
+static pthread_cond_t  global_send_cond;
 
 static int global_running = 0;
 static int global_sysroute_change = 0;
@@ -91,15 +115,19 @@ static int global_trusted_ip_cnt = 0;
 //client_read and client_recv are obsoleted
 void* client_read(void *arg);
 void* client_recv(void *arg);
+
 void* server_read(void *arg);
 void* server_recv(void *arg);
 void* server_write(void *arg);
 void* server_send(void *arg);
+
 void* server_reset_stat(void *arg);
 void* watch_link_route(void *arg);
 void* watch_secret(void *arg);
 void* update_secret(void *arg);
 void* reset_link_route(void *arg);
+int clean_lock_all();
+
 int tun_alloc(char *dev, int flags); 
 int usage(char *pname);
 void sig_handler(int signum);
@@ -121,29 +149,59 @@ int usage(char *pname)
     return 0;
 }
 
+int clean_lock_all()
+{
+    if(global_running)
+    {
+        printlog(ERROR_LEVEL, "error: entering clean_lock_all, which should only happen when process exits.\n");
+        printlog(ERROR_LEVEL, "error: this message means there is a thread exited during process runing.\n");
+    }
+
+    //no thread should exit during process runing, so I put all unlock here, just for future debug.
+    pthread_spin_unlock(&global_stat_spin);
+    pthread_mutex_unlock(&global_write_mutex);
+    pthread_mutex_unlock(&global_send_mutex);
+    unlock_route_spin();
+
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
+    global_running = 1;
     set_log_level(GLOBAL_LOG_LEVEL);
     srandom(time(NULL));
     if(init_route_spin() < 0)
         return -1;
     if(pthread_spin_init(&global_stat_spin, PTHREAD_PROCESS_PRIVATE) != 0)
     {
-        perror("pthread_spin_init");
-        return -1;
+        printlog(errno, "pthread_spin_init");
+        exit(1);
     }
-    global_if_list = NULL;
-    collect_if_info(&global_if_list);
-    
-    global_running = 1;
+    if(pthread_mutex_init(&global_write_mutex, NULL) != 0)
+    {
+        printlog(errno, "pthread_mutex_init");
+        exit(1);
+    }
+    if(pthread_mutex_init(&global_send_mutex, NULL) != 0)
+    {
+        printlog(errno, "pthread_mutex_init");
+        exit(1);
+    }
+    if(pthread_cond_init(&global_write_cond, NULL) != 0)
+    {
+        printlog(errno, "pthread_cond_init");
+        exit(1);
+    }
+    if(pthread_cond_init(&global_send_cond, NULL) != 0)
+    {
+        printlog(errno, "pthread_cond_init");
+        exit(1);
+    }
 
-    int rc1=0, rc2=0, rc3=0, rc5=0, rc6=0, rc7=0, rc8=0;
-    //uint16_t clid = 0;
     struct peer_profile_t ** peer_table = NULL;
-    pthread_t tid1=0, tid2=0, tid3=0, tid5=0, tid6=0, tid7=0, tid8=0;
     int port = DEFAULT_PORT;
     char tun_name[IFNAMSIZ] = "\0";
-    //byte buf_psk[2*AES_TEXT_LEN] = "\0";
 
     int opt;
     while((opt = getopt(argc, argv, "vVp:g:n:i:")) != -1)
@@ -204,6 +262,9 @@ int main(int argc, char *argv[])
         printlog(ERROR_LEVEL, "%s has exited.\n", PROCESS_NAME);
         exit(1);
     }
+
+    global_if_list = NULL;
+    collect_if_info(&global_if_list);
     strncpy(global_tunif.name, tun_name, IFNAMSIZ);
 
     global_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -263,7 +324,6 @@ int main(int argc, char *argv[])
             global_secrets_dir[path_len] = '\0';
             path_len--;
         }
-        //printf("secret dir: %s\n", global_secrets_dir);
     }
 
     FILE *secrets_file = NULL;
@@ -283,8 +343,7 @@ int main(int argc, char *argv[])
     if(NULL == peer_table[global_self_id])
     {
         printlog(ERROR_LEVEL, "init peer error: didn't find self profile in secert file!\n");
-        
-        return -1;
+        goto _END;
     }
 
     if(CHECK_RESTRICTED_IP)
@@ -293,7 +352,7 @@ int main(int argc, char *argv[])
         if(global_trusted_ip == NULL)
         {
             printlog(errno, "init global_trusted_ip: malloc failed");
-            return -1;
+            goto _END;
         }
         else
             bzero(global_trusted_ip, (MAX_ID+1) * sizeof(uint32_t));
@@ -319,6 +378,63 @@ int main(int argc, char *argv[])
         goto _END;
     }
 
+    global_write_buf = (struct packet_profile_t *)malloc(WRITE_BUF_SIZE * sizeof(struct packet_profile_t));
+    if(global_write_buf == NULL)
+    {
+        printlog(errno, "malloc failed: global_write_buf");
+        goto _END;
+    }
+    else
+    {
+        bzero(global_write_buf, WRITE_BUF_SIZE * sizeof(struct packet_profile_t));
+        int i;
+        for(i=0; i<WRITE_BUF_SIZE; i++)
+        {
+            global_write_buf[i].dst_addr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+            if(global_write_buf[i].dst_addr == NULL)
+            {
+                printlog(errno, "malloc failed: global_write_buf");
+                goto _END;
+            }
+            global_write_buf[i].buf_packet = (byte *)malloc(ETH_MTU);
+            if(global_write_buf[i].buf_packet == NULL)
+            {
+                printlog(errno, "malloc failed: global_write_buf");
+                goto _END;
+            }
+        }
+    }
+
+    global_send_buf = (struct packet_profile_t *)malloc(SEND_BUF_SIZE * sizeof(struct packet_profile_t));
+    if(global_send_buf == NULL)
+    {
+        printlog(errno, "malloc failed: global_send_buf");
+        goto _END;
+    }
+    else
+    {
+        bzero(global_send_buf, SEND_BUF_SIZE * sizeof(struct packet_profile_t));
+        int i;
+        for(i=0; i<SEND_BUF_SIZE; i++)
+        {
+            global_send_buf[i].dst_addr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+            if(global_send_buf[i].dst_addr == NULL)
+            {
+                printlog(errno, "malloc failed: global_send_buf");
+                goto _END;
+            }
+            global_send_buf[i].buf_packet = (byte *)malloc(ETH_MTU);
+            if(global_send_buf[i].buf_packet == NULL)
+            {
+                printlog(errno, "malloc failed: global_send_buf");
+                goto _END;
+            }
+        }
+    }
+
+    int rc1=0, rc2=0, rc3=0, rc4=0, rc5=0, rc6=0, rc7=0, rc8=0, rc9=0;
+    pthread_t tid1=0, tid2=0, tid3=0, tid4=0, tid5=0, tid6=0, tid7=0, tid8=0, tid9=0;
+
     if( (rc1 = pthread_create(&tid1, NULL, server_recv, peer_table)) != 0 )
     {
         printlog(errno, "pthread_error: create rc1"); 
@@ -329,11 +445,17 @@ int main(int argc, char *argv[])
         printlog(errno, "pthread_error: create rc2"); 
         goto _END;
     }
-    if( (rc3 = pthread_create(&tid3, NULL, server_reset_stat, peer_table)) != 0 )
+    if( (rc3 = pthread_create(&tid3, NULL, server_write, peer_table)) != 0 )
     {
         printlog(errno, "pthread_error: create rc3"); 
         goto _END;
     }
+    if( (rc4 = pthread_create(&tid4, NULL, server_send, peer_table)) != 0 )
+    {
+        printlog(errno, "pthread_error: create rc4"); 
+        goto _END;
+    }
+
     if( (rc5 = pthread_create(&tid5, NULL, watch_link_route, NULL)) != 0 )
     {
         printlog(errno, "pthread_error: create rc5"); 
@@ -354,7 +476,12 @@ int main(int argc, char *argv[])
         printlog(errno, "pthread_error: create rc8"); 
         goto _END;
     }
-    
+    if( (rc9 = pthread_create(&tid9, NULL, server_reset_stat, peer_table)) != 0 )
+    {
+        printlog(errno, "pthread_error: create rc9"); 
+        goto _END;
+    }
+
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
     //nohup won't work when SIGHUP installed.
@@ -363,11 +490,21 @@ int main(int argc, char *argv[])
     while(global_running)
         sleep(1);  //pause();
 
+    //wait 50ms for the threads to clear env.
+    //struct timespec time_wait_threads;
+    //time_wait_threads.tv_sec = 0;
+    //time_wait_threads.tv_nsec = 50000000;
+    //nanosleep(&time_wait_threads, NULL);
+
     pthread_cancel(tid1);
     pthread_cancel(tid2);
     pthread_cancel(tid3);
+    pthread_cancel(tid4);
     pthread_cancel(tid5);
     pthread_cancel(tid6);
+    pthread_cancel(tid7);
+    pthread_cancel(tid8);
+    pthread_cancel(tid9);
     //pthread_join(tid1, NULL);
     //pthread_join(tid2, NULL);
     //pthread_join(tid3, NULL);
@@ -382,12 +519,42 @@ _END:
         free(global_trusted_ip);
     destroy_route_spin();
     pthread_spin_destroy(&global_stat_spin);
+    pthread_mutex_destroy(&global_write_mutex);
+    pthread_mutex_destroy(&global_send_mutex);
+    pthread_cond_destroy(&global_write_cond);
+    pthread_cond_destroy(&global_send_cond);
+
     destroy_peer_table(peer_table, MAX_ID);
     peer_table = NULL;
-    //free(peer_table);
+    if(global_write_buf != NULL)
+    {
+        int i;
+        for(i=0; i<WRITE_BUF_SIZE; i++)
+        {
+            if(global_write_buf[i].dst_addr != NULL)
+                free(global_write_buf[i].dst_addr);
+            if(global_write_buf[i].buf_packet != NULL)
+                free(global_write_buf[i].buf_packet);
+        }
+        free(global_write_buf);
+    }
+    if(global_send_buf != NULL)
+    {
+        int i;
+        for(i=0; i<SEND_BUF_SIZE; i++)
+        {
+            if(global_send_buf[i].dst_addr != NULL)
+                free(global_send_buf[i].dst_addr);
+            if(global_send_buf[i].buf_packet != NULL)
+                free(global_send_buf[i].buf_packet);
+        }
+        free(global_send_buf);
+    }
+    
     printlog(ERROR_LEVEL, "%s has exited.\n", PROCESS_NAME);
     return 0;
 }
+
 
 void sig_handler(int signum)
 {
@@ -485,30 +652,29 @@ void* watch_secret(void *arg)
             {
                 if(strcmp(event->name, SECRET_NAME) == 0)
                 {
-                    //printlog(ERROR_LEVEL, "The file %s has been changed.\n", event->name);
                     if(event->mask & IN_ISDIR)
                     {
                         if(event->mask & IN_CREATE)
-                            printlog(ERROR_LEVEL, "warning: dir has the same name with %s has been created\n", event->name);
+                            printlog(INFO_LEVEL, "warning: dir has the same name with %s has been created\n", event->name);
                         else if(event->mask & IN_MODIFY)
-                            printlog(ERROR_LEVEL, "warning: dir has the same name with %s has been modified\n", event->name);
+                            printlog(INFO_LEVEL, "warning: dir has the same name with %s has been modified\n", event->name);
                         else if(event->mask & IN_DELETE)
-                            printlog(ERROR_LEVEL, "warning: dir has the same name with %s has been deleted\n", event->name);
+                            printlog(INFO_LEVEL, "warning: dir has the same name with %s has been deleted\n", event->name);
                     }
                     else
                     {
                         if(event->mask & IN_CREATE)
                         {
                             global_secret_change++;
-                            printlog(ERROR_LEVEL, "warning: secret file %s has been created\n", event->name);
+                            printlog(INFO_LEVEL, "warning: secret file %s has been created\n", event->name);
                         }
                         else if(event->mask & IN_MODIFY)
                         {
                             global_secret_change++;
-                            printlog(ERROR_LEVEL, "notice: secret file %s has been modified\n", event->name);
+                            printlog(INFO_LEVEL, "warning: secret file %s has been modified\n", event->name);
                         }
                         else if(event->mask & IN_DELETE)
-                            printlog(ERROR_LEVEL, "warning: secret file %s has been deleted\n", event->name);
+                            printlog(INFO_LEVEL, "warning: secret file %s has been deleted\n", event->name);
                     }
                 }
             }
@@ -527,7 +693,7 @@ void* update_secret(void *arg)
     int pre = global_secret_change;
     while(global_running)
     {
-        sleep(5);
+        sleep(1);
         if(pre != global_secret_change)
         {
             FILE *secrets_file = NULL;
@@ -585,13 +751,14 @@ void* watch_link_route(void *arg)
 
 void* reset_link_route(void *arg)
 {
+    pthread_cleanup_push(clean_lock_all, NULL);
     int pre = global_sysroute_change;
     while(global_running)
     {
         sleep(1);
         if(pre != global_sysroute_change)
         {
-            printlog(ERROR_LEVEL, "RTNETLINK: route changed!\n");
+            printlog(INFO_LEVEL, "RTNETLINK: route changed!\n");
 
             if(clear_if_info(global_if_list) != 0)
                 continue;
@@ -605,15 +772,17 @@ void* reset_link_route(void *arg)
             if(clear_route() != 0)
                 continue;
 
-            printlog(ERROR_LEVEL, "RTNETLINK: route table reset!\n");
+            printlog(INFO_LEVEL, "RTNETLINK: route table reset!\n");
             pre = global_sysroute_change;
         }
     }
+    pthread_cleanup_pop(0);
     return NULL;
 }
 
 void* server_reset_stat(void *arg)
 {
+    pthread_cleanup_push(clean_lock_all, NULL);
     struct peer_profile_t ** peer_table = (struct peer_profile_t **)arg;
     int peer_num = MAX_ID+1;
     //int pre = global_pkt_cnt;
@@ -630,7 +799,7 @@ void* server_reset_stat(void *arg)
             {
                 if(pthread_spin_lock(&global_stat_spin) != 0)
                 {
-                    perror("pthread_spin_lock");
+                    printlog(errno, "pthread_spin_lock");
                     continue;
                 }
                 //if(pre != global_pkt_cnt)
@@ -643,37 +812,38 @@ void* server_reset_stat(void *arg)
                     p->flow_src->time_min = 0;
                     p->flow_src->time_max = 0;
                 }
-                if(j%4 == 0 && p->flow_src->jump_cnt > 0)  //why 4? no why, it can be 5,6,7...100, any
+                if(j%4 == 0 && p->flow_src->jump_cnt > 0)  //why 4? No why, it can be 5,6,7...100, any
                 {
                     j++;
                     p->flow_src->jump_cnt = 0;
-                    printlog(ERROR_LEVEL, "jump status count reset!\n");
+                    printlog(INFO_LEVEL, "jump status count reset!\n");
                 }
                 if(pthread_spin_unlock(&global_stat_spin) != 0)
                 {
-                    perror("pthread_spin_unlock");
+                    printlog(errno, "pthread_spin_unlock");
                     continue;
                 }
             }
         }
     }
+    pthread_cleanup_pop(0);
     return NULL;
 }
 
 void* server_read(void *arg)
 {
+    pthread_cleanup_push(clean_lock_all, NULL);
     struct tunnel_header_t header_send;
     struct peer_profile_t ** peer_table = (struct peer_profile_t **)arg;
-    //uint16_t peerid = 0;
     uint16_t next_id = 0;
     uint16_t src_id;
     uint16_t dst_id;
     uint16_t bigger_id;
     struct sockaddr_in *peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
     struct iphdr ip_h;
-    uint16_t len_load, len_pad, nr_aes_block;
-    byte buf_load[TUN_MTU];
-    byte buf_send[ETH_MTU];
+    uint16_t len_load, nr_aes_block;
+    byte * buf_load = (byte *)malloc(TUN_MTU);
+    byte * buf_send = (byte *)malloc(ETH_MTU);
     byte buf_header[HEADER_LEN];
     byte * buf_psk;
     int i;
@@ -689,21 +859,17 @@ void* server_read(void *arg)
             continue;
         }
 
-        //printlog(ERROR_LEVEL, "read:1 \n" );
         memcpy(&ip_h, buf_load, IPV4_HEAD_LEN);
         next_id = get_next_hop_id(ip_h.daddr, ip_h.saddr);
-        //printlog(ERROR_LEVEL, "in read: dest: %d\n", next_id);
 
-        //peerid = (uint16_t)ntohl(ip_h.daddr);
-        //peerid = next_id;
         if(NULL == peer_table[next_id] || 1 == next_id || global_self_id == next_id)
         {
-            printlog(ERROR_LEVEL, "tunif %s read packet to peer %d.%d: invalid peer!\n", global_tunif.name, next_id/256, next_id%256);
+            printlog(INFO_LEVEL, "tunif %s read packet to peer %d.%d: invalid peer!\n", global_tunif.name, next_id/256, next_id%256);
             continue;
         }
         if(NULL == peer_table[next_id]->peeraddr)
         {
-            printlog(ERROR_LEVEL, "tunif %s read packet to peer %d.%d: invalid addr!\n", global_tunif.name, next_id/256, next_id%256);
+            printlog(INFO_LEVEL, "tunif %s read packet to peer %d.%d: invalid addr!\n", global_tunif.name, next_id/256, next_id%256);
             continue;
         }
         memcpy(peeraddr, peer_table[next_id]->peeraddr, sizeof(struct sockaddr_in));
@@ -718,12 +884,12 @@ void* server_read(void *arg)
         //not supported now: read packet in tunif's subnet but ID mismatch
         if(src_inside != src_local)
         {
-            printlog(ERROR_LEVEL, "tunif %s read packet from other peer, ignore it!\n", global_tunif.name);
+            printlog(INFO_LEVEL, "tunif %s read packet from other peer, ignore it!\n", global_tunif.name);
             continue;
         }
         else if(!dst_inside && !src_inside) //not supported now: outside IP to outside IP
         {
-            printlog(ERROR_LEVEL, "tunif %s read packet from outside net to outside net, ignore it!\n", global_tunif.name);
+            printlog(INFO_LEVEL, "tunif %s read packet from outside net to outside net, ignore it!\n", global_tunif.name);
             continue;
         }  
 
@@ -754,7 +920,7 @@ void* server_read(void *arg)
         bigger_id = dst_id > src_id ? dst_id : src_id;
         if(NULL == peer_table[bigger_id])
         {
-            printlog(ERROR_LEVEL, "tunif %s read packet of invalid peer: %d.%d!\n", global_tunif.name, bigger_id/256, bigger_id%256);
+            printlog(INFO_LEVEL, "tunif %s read packet of invalid peer: %d.%d!\n", global_tunif.name, bigger_id/256, bigger_id%256);
             continue;
         }
 
@@ -770,11 +936,7 @@ void* server_read(void *arg)
         header_send.ttl_flag_random.u16 = htons(header_send.ttl_flag_random.u16);
         uint32_t now = time(NULL);
         if(global_local_time == now)
-        {
             global_local_seq++;
-            //printf("-----------------local time is: %d\n", peer_table[next_id]->local_time);
-            //printf("-----------------local seq is: %d\n", peer_table[next_id]->local_seq);
-        }
         else
         {
             global_local_seq = 0;
@@ -789,24 +951,136 @@ void* server_read(void *arg)
 
         memcpy(buf_header, &header_send, HEADER_LEN);
         encrypt(buf_send, buf_header, global_buf_group_psk, AES_KEY_LEN);  //encrypt header with group PSK
-        encrypt(&buf_send[HEADER_LEN], buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
+        encrypt(buf_send+HEADER_LEN, buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
 
         nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
         for(i=0; i<nr_aes_block; i++)
-            encrypt(&buf_send[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], &buf_load[i*AES_TEXT_LEN], buf_psk, AES_KEY_LEN);
+            encrypt(buf_send+HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN, buf_load+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
 
-        len_pad = (len_load > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
-        if(sendto(global_sockfd, buf_send, HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN + len_pad,
-            0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
-            printlog(errno, "tunif %s sendto next_id %d.%d socket error", global_tunif.name, next_id/256, next_id%256);
+        //copy send packet to send thread
+        if(pthread_mutex_lock(&global_send_mutex) != 0)
+        {
+            printlog(errno, "pthread_mutex_lock");
+            printlog(ERROR_LEVEL, "drop this packet to next id: %d.%d\n", next_id/256, next_id%256);
+            continue;
+        }
+
+        if((global_send_last + 1) % SEND_BUF_SIZE == global_send_first)
+            printlog(ERROR_LEVEL, "send_buf is full, drop this packet to next id: %d.%d\n", next_id/256, next_id%256);
+        else
+        {
+            int len = HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN;
+            global_send_last = (global_send_last + 1) % SEND_BUF_SIZE;
+            global_send_buf[global_send_last].src_id = global_self_id;
+            global_send_buf[global_send_last].dst_id = dst_id;
+            global_send_buf[global_send_last].send_fd = global_sockfd;
+            global_send_buf[global_send_last].len = len;
+            memcpy(global_send_buf[global_send_last].dst_addr, peeraddr, sizeof(struct sockaddr_in));
+            memcpy(global_send_buf[global_send_last].buf_packet, buf_send, len);
+        }
+
+        pthread_cond_signal(&global_send_cond);
+
+        if(pthread_mutex_unlock(&global_send_mutex) != 0)
+            printlog(errno, "pthread_mutex_unlock");
+
+        continue;
     }
 
     free(peeraddr);
+    free(buf_load);
+    free(buf_send);
+    pthread_cleanup_pop(0);
+    return NULL;
+}
+
+void* server_send(void *arg)
+{
+    pthread_cleanup_push(clean_lock_all, NULL);
+
+    struct sockaddr_in *peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+    byte * buf_send = (byte *)malloc(ETH_MTU);
+    int sockfd = 0;
+    int len = 0;
+    uint16_t dst_id = 0;
+
+    while(global_running)
+    {
+        if(pthread_mutex_lock(&global_send_mutex) != 0)
+        {
+            printlog(errno, "pthread_mutex_lock");
+            continue;
+        }
+        
+        while(global_send_last == global_send_first)
+            pthread_cond_wait(&global_send_cond, &global_send_mutex);
+
+        global_send_first = (global_send_first + 1) % SEND_BUF_SIZE;
+        sockfd = global_send_buf[global_send_first].send_fd;
+        len = global_send_buf[global_send_first].len;
+        dst_id = global_send_buf[global_send_first].dst_id;
+        memcpy(peeraddr, global_send_buf[global_send_first].dst_addr, sizeof(struct sockaddr_in));
+        memcpy(buf_send, global_send_buf[global_send_first].buf_packet, len);
+        
+        if(pthread_mutex_unlock(&global_send_mutex) != 0)
+            printlog(errno, "pthread_mutex_unlock");
+    
+        int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
+        if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
+            printlog(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
+
+        continue;
+    }
+
+    free(peeraddr);
+    free(buf_send);
+    pthread_cleanup_pop(0);
+    return NULL;
+}
+
+void* server_write(void *arg)
+{
+    pthread_cleanup_push(clean_lock_all, NULL);
+
+    byte * buf_write = (byte *)malloc(TUN_MTU);
+    int tunfd = 0;
+    int len = 0;
+    uint16_t dst_id = 0;
+
+    while(global_running)
+    {
+        if(pthread_mutex_lock(&global_write_mutex) != 0)
+        {
+            printlog(errno, "pthread_mutex_lock");
+            continue;
+        }
+        
+        while(global_write_last == global_write_first)
+            pthread_cond_wait(&global_write_cond, &global_write_mutex);
+
+        global_write_first = (global_write_first + 1) % WRITE_BUF_SIZE;
+        tunfd = global_write_buf[global_write_first].write_fd;
+        len = global_write_buf[global_write_first].len;
+        dst_id = global_write_buf[global_write_first].dst_id;
+        memcpy(buf_write, global_write_buf[global_write_first].buf_packet, len);
+        
+        if(pthread_mutex_unlock(&global_write_mutex) != 0)
+            printlog(errno, "pthread_mutex_unlock");
+    
+        if(write(tunfd, buf_write, len) < 0)
+            printlog(errno, "tunif %s write error of dst_id %d.%d", global_tunif.name, dst_id/256, dst_id%256);
+
+        continue;
+    }
+
+    free(buf_write);
+    pthread_cleanup_pop(0);
     return NULL;
 }
 
 void* server_recv(void *arg)
 {
+    pthread_cleanup_push(clean_lock_all, NULL);
     struct tunnel_header_t header_recv, header_send;
     struct peer_profile_t ** peer_table = (struct peer_profile_t **)arg;
     uint16_t next_id = 0;
@@ -823,12 +1097,11 @@ void* server_recv(void *arg)
     uint nr_aes_block_ipv4_header = (IPV4_HEAD_LEN + TCP_HEAD_LEN + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
     int i;
     byte * buf_psk;
-    byte buf_recv[ETH_MTU];
-    byte buf_load[TUN_MTU];
+    byte * buf_recv = (byte *)malloc(ETH_MTU);
+    byte * buf_load = (byte *)malloc(TUN_MTU);
     //byte buf_send[TUN_MTU];
     byte buf_header[HEADER_LEN];
     byte buf_icv[ICV_LEN];
-    //printlog(ERROR_LEVEL, "global_self_id: %d\n", global_self_id);
 
     while(global_running)
     {
@@ -845,7 +1118,7 @@ void* server_recv(void *arg)
         header_recv.ttl_flag_random.u16 = ntohs(header_recv.ttl_flag_random.u16);
         if(header_recv.ttl_flag_random.bit.random != 0)
         {
-            printlog(ERROR_LEVEL, "tunif %s received packet: group not match!\n", global_tunif.name);
+            printlog(INFO_LEVEL, "tunif %s received packet: group not match!\n", global_tunif.name);
             continue;
         }
         
@@ -855,14 +1128,14 @@ void* server_recv(void *arg)
 
         if(NULL == peer_table[bigger_id] || peer_table[bigger_id]->valid == false)
         {
-            printlog(ERROR_LEVEL, "tunif %s received packet from %d.%d to %d.%d: invalid peer: %d.%d!\n", 
+            printlog(INFO_LEVEL, "tunif %s received packet from %d.%d to %d.%d: invalid peer: %d.%d!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, bigger_id/256, bigger_id%256);
             continue;
         }
         //if(bigger_id != global_self_id && NULL == peer_table[bigger_id])
         if(src_id == 0 || src_id == 1 || src_id == global_self_id)
         {
-            printlog(ERROR_LEVEL, "tunif %s received packet from %d.%d to %d.%d: invalid src_id!\n", 
+            printlog(INFO_LEVEL, "tunif %s received packet from %d.%d to %d.%d: invalid src_id!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
             continue;
         }
@@ -871,7 +1144,7 @@ void* server_recv(void *arg)
             //if dst_id == global_self_id, don't ckeck but write to tunif
             if(dst_id != global_self_id && binary_search(global_trusted_ip, 0, global_trusted_ip_cnt, peeraddr->sin_addr.s_addr) == -1)
             {
-                printlog(ERROR_LEVEL, "tunif %s received packet from %d.%d to %d.%d: src_id addr not trusted!\n", 
+                printlog(INFO_LEVEL, "tunif %s received packet from %d.%d to %d.%d: src_id addr not trusted!\n", 
                     global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
                 continue;
             }
@@ -880,9 +1153,9 @@ void* server_recv(void *arg)
         buf_psk = peer_table[bigger_id]->psk;
 
         encrypt(buf_icv, buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
-        if(strncmp((char*)buf_icv, (char*)&buf_recv[HEADER_LEN], ICV_LEN) != 0)
+        if(strncmp((char*)buf_icv, (char*)(buf_recv+HEADER_LEN), ICV_LEN) != 0)
         {
-            printlog(ERROR_LEVEL, "tunif %s received packet from %d.%d to %d.%d: icv doesn't match!\n", 
+            printlog(INFO_LEVEL, "tunif %s received packet from %d.%d to %d.%d: icv doesn't match!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
             continue;
         }
@@ -898,44 +1171,43 @@ void* server_recv(void *arg)
         uint32_t pkt_time = ntohl(header_recv.time);
         header_recv.seq_frag_off.u32 = ntohl(header_recv.seq_frag_off.u32);
         uint32_t pkt_seq = header_recv.seq_frag_off.bit.seq;
-        //printf("pkt_time: %d\n", pkt_time);
-        //printf("pkt_seq : %d\n", pkt_seq);
+
         if(pthread_spin_lock(&global_stat_spin) != 0)
         {
-            perror("pthread_spin_lock");
+            printlog(errno, "pthread_spin_lock");
             continue;
         }
         int fs = flow_filter(pkt_time, pkt_seq, src_id, dst_id, peer_table);
         if(pthread_spin_unlock(&global_stat_spin) != 0)
         {
-            perror("pthread_spin_unlock");
+            printlog(errno, "pthread_spin_unlock");
             continue;
         }
         if(fs == -2)
-            printlog(ERROR_LEVEL, "tunif %s received packet from %d.%d to %d.%d: replay limit exceeded!\n", 
+            printlog(INFO_LEVEL, "tunif %s received packet from %d.%d to %d.%d: replay limit exceeded!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
         if(fs == -6)
         {
-            printlog(ERROR_LEVEL, "tunif %s received packet from %d.%d to %d.%d: replay limit exceeded!\n", 
+            printlog(INFO_LEVEL, "tunif %s received packet from %d.%d to %d.%d: replay limit exceeded!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
-            printlog(ERROR_LEVEL, "tunif %s set peer %d.%d to invalid: involve limit exceeded!\n", 
+            printlog(INFO_LEVEL, "tunif %s set peer %d.%d to invalid: involve limit exceeded!\n", 
                 global_tunif.name, dst_id/256, dst_id%256);
         }
         if(fs == -3)
-            printlog(ERROR_LEVEL, "tunif %s received packet from %d.%d to %d.%d: time jump limit exceeded!\n", 
+            printlog(INFO_LEVEL, "tunif %s received packet from %d.%d to %d.%d: time jump limit exceeded!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
         if(fs == -5)
         {
-            printlog(ERROR_LEVEL, "tunif %s received packet from %d.%d to %d.%d: time jump limit exceeded!\n", 
+            printlog(INFO_LEVEL, "tunif %s received packet from %d.%d to %d.%d: time jump limit exceeded!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
-            printlog(ERROR_LEVEL, "tunif %s set peer %d.%d to invalid: involve limit exceeded!\n", 
+            printlog(INFO_LEVEL, "tunif %s set peer %d.%d to invalid: involve limit exceeded!\n", 
                 global_tunif.name, dst_id/256, dst_id%256);
         }
         if(fs < 0)
             continue;
 
         for(i=0; i<nr_aes_block_ipv4_header; i++)
-            decrypt(&buf_load[i*AES_TEXT_LEN], &buf_recv[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], buf_psk, AES_KEY_LEN);
+            decrypt(buf_load+i*AES_TEXT_LEN, buf_recv+HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
         
         memcpy(&ip_h, buf_load, IPV4_HEAD_LEN);
         memcpy(&ip_saddr, &ip_h.saddr, sizeof(uint32_t));
@@ -943,8 +1215,6 @@ void* server_recv(void *arg)
 
         uint32_t daddr, saddr; //network byte order
 
-        //if(0 != src_id)
-        //src_inside
         if(header_recv.ttl_flag_random.bit.src_inside == true)
         {
             saddr = (global_tunif.addr & global_tunif.mask) | ip_h.saddr;
@@ -953,8 +1223,6 @@ void* server_recv(void *arg)
         else
             saddr = ip_h.saddr;
 
-        //if(0 != dst_id)
-        //dst_inside
         if(header_recv.ttl_flag_random.bit.dst_inside == true)
         {
             daddr = (global_tunif.addr & global_tunif.mask) | ip_h.daddr;
@@ -970,34 +1238,57 @@ void* server_recv(void *arg)
         bool dst_inside = ((daddr & global_tunif.mask) == (global_tunif.addr & global_tunif.mask));
         if(header_recv.ttl_flag_random.bit.dst_inside == false && dst_inside == true)
         {
-            printlog(ERROR_LEVEL, "tunif %s received packet from %d.%d to %d.%d: probe packet, drop it!\n", 
+            printlog(INFO_LEVEL, "tunif %s received packet from %d.%d to %d.%d: probe packet, drop it!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
             continue;
         }
 
         if(0 == next_id)
         {
-            printlog(ERROR_LEVEL, "tunif %s received packet from %d.%d to %d.%d: no route!\n", 
+            printlog(INFO_LEVEL, "tunif %s received packet from %d.%d to %d.%d: no route!\n", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
             continue;
         }
         else if(1 == next_id || global_self_id == next_id) //write to local tunif
         {
             for(i=nr_aes_block_ipv4_header; i<nr_aes_block; i++)
-                decrypt(&buf_load[i*AES_TEXT_LEN], &buf_recv[HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN], buf_psk, AES_KEY_LEN);
+                decrypt(buf_load+i*AES_TEXT_LEN, buf_recv+HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
 
-            if(write(global_tunfd, &buf_load, len_load) < 0)
-                printlog(errno, "tunif %s write error", global_tunif.name);
+            //copy write packet to write thread
+            if(pthread_mutex_lock(&global_write_mutex) != 0)
+            {
+                printlog(errno, "pthread_mutex_lock");
+                printlog(ERROR_LEVEL, "drop this packet to next id: %d.%d\n", dst_id/256, dst_id%256);
+                continue;
+            }
+    
+            if((global_write_last + 1) % WRITE_BUF_SIZE == global_write_first)
+                printlog(ERROR_LEVEL, "write_buf is full, drop this packet to next id: %d.%d\n", dst_id/256, dst_id%256);
+            else
+            {
+                global_write_last = (global_write_last + 1) % WRITE_BUF_SIZE;
+                global_write_buf[global_write_last].src_id = src_id;
+                global_write_buf[global_write_last].dst_id = dst_id;
+                global_write_buf[global_write_last].write_fd = global_tunfd;
+                global_write_buf[global_write_last].len = len_load;
+                memcpy(global_write_buf[global_write_last].dst_addr, peeraddr, sizeof(struct sockaddr_in));
+                memcpy(global_write_buf[global_write_last].buf_packet, buf_load, len_load);
+            }
+    
+            pthread_cond_signal(&global_write_cond);
+    
+            if(pthread_mutex_unlock(&global_write_mutex) != 0)
+                printlog(errno, "pthread_mutex_unlock");
+
             continue;
         }
         else  //switch to next_id or dst_id
-        //if( (0 == dst_id && 1 != next_id) || (0 != dst_id && global_self_id != dst_id) )
         {
             ttl = header_recv.ttl_flag_random.bit.ttl;
             //packet dst is not local and ttl expire, drop packet. only allow 16 hops
             if(TTL_MIN == ttl)
             {
-                printlog(ERROR_LEVEL, "TTL expired! from %d.%d.%d.%d to %d.%d.%d.%d\n",
+                printlog(INFO_LEVEL, "TTL expired! from %d.%d.%d.%d to %d.%d.%d.%d\n",
                     ip_saddr.a, ip_saddr.b, ip_saddr.c, ip_saddr.d,
                     ip_daddr.a, ip_daddr.b, ip_daddr.c, ip_daddr.d);   
                 continue;
@@ -1006,33 +1297,29 @@ void* server_recv(void *arg)
             if(ALLOW_P2P != true)
                 if(header_recv.ttl_flag_random.bit.src_inside == true && header_recv.ttl_flag_random.bit.dst_inside == true)
                 {
-                    printlog(ERROR_LEVEL, "tunif %s received packet from %d.%d to %d.%d: peer_tablep not allowed!\n", 
+                    printlog(INFO_LEVEL, "tunif %s received packet from %d.%d to %d.%d: peer_tablep not allowed!\n", 
                         global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
                     continue;
                 }
 
-            //if(dst_id != 0)
-            //    next_id = dst_id;
-
             if(NULL == peer_table[next_id])
             {
-                printlog(ERROR_LEVEL, "tunif %s recv packet from %d.%d to %d.%d: route to invalid next peer: %d.%d!\n", 
+                printlog(INFO_LEVEL, "tunif %s recv packet from %d.%d to %d.%d: route to invalid next peer: %d.%d!\n", 
                     global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, next_id/256, next_id%256);
                 continue;
             }
             if(NULL == peer_table[next_id]->peeraddr)
             {
-                printlog(ERROR_LEVEL, "tunif %s recv packet from %d.%d to %d.%d: route to next peer %d.%d: invalid addr!\n", 
+                printlog(INFO_LEVEL, "tunif %s recv packet from %d.%d to %d.%d: route to next peer %d.%d: invalid addr!\n", 
                     global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, next_id/256, next_id%256);
                 continue;
             }
 
             //split horizon
-            //i don't want to compare port here, thus prevent two peers in the same NAT gw from seeing each other.
             if(peeraddr->sin_addr.s_addr == peer_table[next_id]->peeraddr->sin_addr.s_addr &&
                 peeraddr->sin_port == peer_table[next_id]->peeraddr->sin_port)
             {
-                printlog(ERROR_LEVEL, "tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!\n", 
+                printlog(INFO_LEVEL, "tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!\n", 
                     global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, next_id/256, next_id%256);
                 continue;
             }
@@ -1043,22 +1330,48 @@ void* server_recv(void *arg)
             header_send.ttl_flag_random.bit.ttl = ttl;
             header_send.ttl_flag_random.bit.src_inside = header_recv.ttl_flag_random.bit.src_inside;
             header_send.ttl_flag_random.bit.dst_inside = header_recv.ttl_flag_random.bit.dst_inside;
-            header_send.ttl_flag_random.bit.random = random();
+            header_send.ttl_flag_random.bit.random = 0;
             header_send.ttl_flag_random.u16 = htons(header_send.ttl_flag_random.u16);
 
             memcpy(buf_header, &header_send, HEADER_LEN);
             encrypt(buf_recv, buf_header, global_buf_group_psk, AES_KEY_LEN);  //encrypt header with group PSK
-            encrypt(&buf_recv[HEADER_LEN], buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
+            encrypt(buf_recv+HEADER_LEN, buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
 
-            int len_pad = (len_load > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
-            if(sendto(global_sockfd, buf_recv, HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN + len_pad,
-                0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
-                printlog(errno, "tunif %s sendto next_id %d.%d socket error", global_tunif.name, next_id/256, next_id%256);
+            //copy send packet to send thread
+            if(pthread_mutex_lock(&global_send_mutex) != 0)
+            {
+                printlog(errno, "pthread_mutex_lock");
+                printlog(ERROR_LEVEL, "drop this packet to next id: %d.%d\n", next_id/256, next_id%256);
+                continue;
+            }
+    
+            if((global_send_last + 1) % SEND_BUF_SIZE == global_send_first)
+                printlog(ERROR_LEVEL, "send_buf is full, drop this packet to next id: %d.%d\n", next_id/256, next_id%256);
+            else
+            {
+                int len = HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN;
+                global_send_last = (global_send_last + 1) % SEND_BUF_SIZE;
+                global_send_buf[global_send_last].src_id = src_id;
+                global_send_buf[global_send_last].dst_id = dst_id;
+                global_send_buf[global_send_last].send_fd = global_sockfd;
+                global_send_buf[global_send_last].len = len;
+                memcpy(global_send_buf[global_send_last].dst_addr, peeraddr, sizeof(struct sockaddr_in));
+                memcpy(global_send_buf[global_send_last].buf_packet, buf_recv, len);
+            }
+    
+            pthread_cond_signal(&global_send_cond);
+    
+            if(pthread_mutex_unlock(&global_send_mutex) != 0)
+                printlog(errno, "pthread_mutex_unlock");
+
             continue;
         }
     }
 
     free(peeraddr);
+    free(buf_recv);
+    free(buf_load);
+    pthread_cleanup_pop(0);
     return NULL;
 }
 
@@ -1137,7 +1450,6 @@ int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t d
     {
         if(bit_array_get(fp->ba_now, pkt_seq) == 1)
         {
-            //printf("packet duplicate!\n");
             fp->dup_cnt++;
             return -1;
         }
@@ -1148,7 +1460,6 @@ int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t d
     {
         if(bit_array_get(fp->ba_pre, pkt_seq) == 1)
         {
-            //printf("packet duplicate!\n");
             fp->dup_cnt++;
             return -1;
         }

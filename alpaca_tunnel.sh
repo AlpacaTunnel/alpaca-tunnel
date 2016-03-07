@@ -41,6 +41,7 @@ BACKUP_CONF=$BACKUP_PATH/alpaca_tunnel.conf
 BACKUP_SERVER_LIST_FILE=$BACKUP_PATH/server_list
 BACKUP_GW_IP=/$BACKUP_PATH/phy_gw_ip
 BACKUP_GW_DEV=/$BACKUP_PATH/phy_gw_dev
+CHNROUTE_GW=/tmp/alpaca_tunnel_gw_ip
 
 TCPMSS=$((TUN_MTU-60))
 
@@ -359,6 +360,7 @@ clientup()
     check_ip_format $default_gw_ip
     if [ $? == 0 ]; then
         echo $default_gw_ip > $BACKUP_GW_IP
+        echo $default_gw_ip > $CHNROUTE_GW
         echo $default_gw_dev > $BACKUP_GW_DEV
         gwmtu=`ip link show dev $default_gw_dev | grep -i mtu | sed -e 's/.*mtu \([^ ]*\).*/\1/'`
         tunmtu=$((gwmtu-HEADER_LEN))

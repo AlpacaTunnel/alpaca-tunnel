@@ -57,6 +57,10 @@ struct rtnl_handle_t
 
 #define RT_TB_SIZE 1024
 
+int lock_route_spin();
+int unlock_route_spin();
+
+//don't call init/destroy in multi threads!
 //must call at first
 int init_route_spin();
 //must call at the end

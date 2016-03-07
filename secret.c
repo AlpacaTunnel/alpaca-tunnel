@@ -159,6 +159,7 @@ struct peer_profile_t** init_peer_table(FILE *secrets_file, int max_id)
     return peer_table;
 }
 
+//there should be lock handle, such as global_stat_spin, but I just don't want to implement it now.
 int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, int max_id)
 {
     if(NULL == peer_table || NULL == secrets_file)
@@ -225,6 +226,9 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
 
         tmp_peer->id = id;
         tmp_peer->discard = false;
+
+        if(strlen(psk_str) > 2*AES_TEXT_LEN)
+            printlog(INFO_LEVEL, "Warning: PSK of ID %s is longer than %d, ignore some bytes.\n", id_str, 2*AES_TEXT_LEN);
         strncpy((char*)tmp_peer->psk, psk_str, 2*AES_TEXT_LEN);
 
         if(port_str != NULL) //port_str must be parsed before ip, because servaddr.sin_port uses it.
