@@ -8,7 +8,7 @@ struct bit_array_t* bit_array_create(uint32_t size)
 {
     if(size == 0 || size > BIT_ARRAY_MAX_SIZE)
     {
-        printlog(ERROR_LEVEL, "error bit_array_create: size is illegal");
+        printlog(ERROR_LEVEL, "error bit_array_create: size is illegal: %d\n", size);
         return NULL;
     }
 
@@ -54,12 +54,12 @@ int bit_array_copy(struct bit_array_t *dst, struct bit_array_t *src)
 {
     if(dst == NULL || src == NULL)
     {
-        printlog(ERROR_LEVEL, "error bit_array_copy: dst or src is NULL");
+        printlog(ERROR_LEVEL, "error bit_array_copy: dst or src is NULL\n");
         return -1;
     }
     if(dst->size != src->size)
     {
-        printlog(ERROR_LEVEL, "error bit_array_copy: dst->size != src->size");
+        printlog(ERROR_LEVEL, "error bit_array_copy: dst->size != src->size\n");
         return -1;
     }
     uint32_t unit_num = (dst->size + BIT_ARRAY_UNIT_SIZE - 1) / BIT_ARRAY_UNIT_SIZE;
@@ -92,7 +92,7 @@ int bit_array_set(struct bit_array_t *ba, uint32_t index)
 {
     if(index > ba->size)
     {
-        printlog(INFO_LEVEL, "error bit_array_set: index is larger than size");
+        printlog(INFO_LEVEL, "error bit_array_set: index is larger than size: %d\n", index);
         return -1;
     }
 
@@ -107,7 +107,7 @@ int bit_array_clear(struct bit_array_t *ba, uint32_t index)
 {
     if(index > ba->size)
     {
-        printlog(INFO_LEVEL, "error bit_array_clear: index is larger than size");
+        printlog(INFO_LEVEL, "error bit_array_clear: index is larger than size: %d\n", index);
         return -1;
     }
 
@@ -122,7 +122,7 @@ int bit_array_get(struct bit_array_t *ba, uint32_t index)
 {
     if(index > ba->size)
     {
-        printlog(INFO_LEVEL, "error bit_array_get: index is larger than size");
+        printlog(INFO_LEVEL, "error bit_array_get: index is larger than size: %d\n", index);
         return -1;
     }
 

@@ -52,7 +52,7 @@ int set_log_level(int log_level)
 {
     if(global_log_level > 0 || global_log_level < MAX_LEVEL)
     {
-        printlog(0, "error set_log_level: log_level value may be wrong, default value ERROR_LEVEL will not changed");
+        printlog(0, "error set_log_level: log_level value may be wrong, default value ERROR_LEVEL will not changed\n");
         return -1;
     }
 

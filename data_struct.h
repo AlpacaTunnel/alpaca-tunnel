@@ -24,6 +24,11 @@ int bit_array_copy(struct bit_array_t *dst, struct bit_array_t *src);
 int bit_array_clearall(struct bit_array_t *ba);
 int bit_array_setall(struct bit_array_t *ba);
 
+/*
+  return -1: error
+  return 0: empty
+  return 1: occupy
+*/
 int bit_array_set(struct bit_array_t *ba, uint32_t index);
 int bit_array_clear(struct bit_array_t *ba, uint32_t index);
 int bit_array_get(struct bit_array_t *ba, uint32_t index);

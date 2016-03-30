@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 
 struct peer_profile_t* add_peer()
 {
@@ -30,6 +31,62 @@ struct peer_profile_t* add_peer()
         bzero(peeraddr, sizeof(struct sockaddr_in));
         p->peeraddr = peeraddr;
     }
+
+    uint32_t * index_array_pre = (uint32_t *)malloc(SEQ_LEVEL_1*sizeof(uint32_t));
+    if(peeraddr == NULL)
+    {
+        printlog(errno, "add_peer: malloc failed");
+        delete_peer(p);
+        return NULL;
+    }
+    else
+    {
+        bzero(index_array_pre, SEQ_LEVEL_1*sizeof(uint32_t));
+        p->index_array_pre = index_array_pre;
+    }
+
+    uint32_t * index_array_now = (uint32_t *)malloc(SEQ_LEVEL_1*sizeof(uint32_t));
+    if(peeraddr == NULL)
+    {
+        printlog(errno, "add_peer: malloc failed");
+        delete_peer(p);
+        return NULL;
+    }
+    else
+    {
+        bzero(index_array_now, SEQ_LEVEL_1*sizeof(uint32_t));
+        p->index_array_now = index_array_now;
+    }
+
+    p->timer_info = (struct timer_info_t *)malloc(sizeof(struct timer_info_t));
+    if(p->timer_info == NULL)
+    {
+        printlog(errno, "add_peer: malloc failed");
+        delete_peer(p);
+        return NULL;
+    }
+    else
+        bzero(p->timer_info, sizeof(struct timer_info_t));
+
+    p->timer_info->timerfd_pre = (struct ack_info_t *)malloc((SEQ_LEVEL_1+1) * sizeof(struct ack_info_t));
+    if(p->timer_info->timerfd_pre == NULL)
+    {
+        printlog(errno, "add_peer: malloc failed");
+        delete_peer(p);
+        return NULL;
+    }
+    else
+        bzero(p->timer_info->timerfd_pre, (SEQ_LEVEL_1+1) * sizeof(struct ack_info_t));
+
+    p->timer_info->timerfd_now = (struct ack_info_t *)malloc((SEQ_LEVEL_1+1) * sizeof(struct ack_info_t));
+    if(p->timer_info->timerfd_now == NULL)
+    {
+        printlog(errno, "add_peer: malloc failed");
+        delete_peer(p);
+        return NULL;
+    }
+    else
+        bzero(p->timer_info->timerfd_now, (SEQ_LEVEL_1+1) * sizeof(struct ack_info_t));
 
     p->flow_src = (struct flow_profile_t *)malloc(sizeof(struct flow_profile_t));
     if(p->flow_src == NULL)
@@ -66,6 +123,21 @@ struct peer_profile_t* add_peer()
     return p;
 }
 
+int close_all_timerfd(struct ack_info_t timerfd[], int num)
+{
+    int i;
+    for(i = 0; i < num; i++)
+    {
+        if(timerfd[i].fd != 0)
+        {
+            close(timerfd[i].fd);
+            timerfd[i].fd = 0;
+            timerfd[i].cnt = 0;
+        }
+    }
+    return 0;
+}
+
 int delete_peer(struct peer_profile_t* p)
 {
     if(p == NULL)
@@ -73,6 +145,29 @@ int delete_peer(struct peer_profile_t* p)
 
     if(p->peeraddr != NULL)
         free(p->peeraddr);
+
+    if(p->index_array_pre != NULL)
+        free(p->index_array_pre);
+
+    if(p->index_array_now != NULL)
+        free(p->index_array_now);
+
+    if(p->timer_info != NULL)
+    {
+        if(p->timer_info->timerfd_pre != NULL)
+        {
+            close_all_timerfd(p->timer_info->timerfd_pre, (SEQ_LEVEL_1+1));
+            free(p->timer_info->timerfd_pre);
+        }
+    
+        if(p->timer_info->timerfd_now != NULL)
+        {
+            close_all_timerfd(p->timer_info->timerfd_now, (SEQ_LEVEL_1+1));
+            free(p->timer_info->timerfd_now);
+        }
+        free(p->timer_info);
+    }
+    
 
     if(p->flow_src != NULL)
     {
@@ -100,6 +195,24 @@ int copy_peer(struct peer_profile_t* dst, struct peer_profile_t* src)
         return -1;
     }
 
+    if(dst->timer_info == NULL || src->timer_info == NULL)
+    {
+        printlog(ERROR_LEVEL, "error copy_peer: dst->timer_info or src->timer_info is NULL\n");
+        return -1;
+    }
+
+    if(dst->timer_info->timerfd_pre == NULL || src->timer_info->timerfd_pre == NULL)
+    {
+        printlog(ERROR_LEVEL, "error copy_peer: dst->timerfd_pre or src->timerfd_pre is NULL\n");
+        return -1;
+    }
+
+    if(dst->timer_info->timerfd_now == NULL || src->timer_info->timerfd_now == NULL)
+    {
+        printlog(ERROR_LEVEL, "error copy_peer: dst->timerfd_now or src->timerfd_now is NULL\n");
+        return -1;
+    }
+
     if(dst->flow_src == NULL || src->flow_src == NULL)
     {
         printlog(ERROR_LEVEL, "error copy_peer: dst->flow_src or src->flow_src is NULL\n");
@@ -119,6 +232,13 @@ int copy_peer(struct peer_profile_t* dst, struct peer_profile_t* src)
 
     memcpy(dst->psk, src->psk, 2*AES_TEXT_LEN);
     memcpy(dst->peeraddr, src->peeraddr, sizeof(struct sockaddr_in));
+
+    dst->timer_info->time_pre = src->timer_info->time_pre;
+    dst->timer_info->time_now = src->timer_info->time_now;
+    close_all_timerfd(dst->timer_info->timerfd_pre, (SEQ_LEVEL_1+1));
+    close_all_timerfd(dst->timer_info->timerfd_now, (SEQ_LEVEL_1+1));
+    memcpy(dst->timer_info->timerfd_pre, src->timer_info->timerfd_pre, (SEQ_LEVEL_1+1) * sizeof(int));
+    memcpy(dst->timer_info->timerfd_now, src->timer_info->timerfd_now, (SEQ_LEVEL_1+1) * sizeof(int));
 
     dst->flow_src->time_pre    = src->flow_src->time_pre;
     dst->flow_src->time_now    = src->flow_src->time_now;
@@ -151,7 +271,7 @@ struct peer_profile_t** init_peer_table(FILE *secrets_file, int max_id)
 
     if(update_peer_table(peer_table, secrets_file, max_id) < 0)
     {
-        printlog(ERROR_LEVEL, "init_peer_table: update_peer_table failed");
+        printlog(ERROR_LEVEL, "init_peer_table: update_peer_table failed\n");
         destroy_peer_table(peer_table, max_id); 
         return NULL;
     }
@@ -164,7 +284,7 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
 {
     if(NULL == peer_table || NULL == secrets_file)
     {
-        printlog(ERROR_LEVEL, "error update_peer_table: peer_table or secrets_file is NULL");
+        printlog(ERROR_LEVEL, "error update_peer_table: peer_table or secrets_file is NULL\n");
         return -1;
     }
     

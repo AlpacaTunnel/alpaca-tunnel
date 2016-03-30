@@ -56,7 +56,7 @@ int hostname_to_ip(char *hostname , char *ip)
     int rv = getaddrinfo(hostname, "http", &hints, &servinfo);
     if(rv != 0) 
     {
-        printlog(errno, "getaddrinfo: %s: %s\n", hostname, gai_strerror(rv));
+        printlog(errno, "getaddrinfo: %s: %s", hostname, gai_strerror(rv));
         return -1;
     }
  

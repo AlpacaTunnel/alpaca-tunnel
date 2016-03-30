@@ -16,13 +16,16 @@
 #include <linux/ip.h>
 #include <sys/inotify.h>
 #include <sys/ioctl.h>
+#include <sys/timerfd.h>
+#include <sys/epoll.h>
 
 #ifndef BOOL_T_
 #define BOOL_T_
     typedef enum { false, true } bool;
 #endif
 
-#define VERSION "2.3"
+#define PROCESS_NAME "AlpacaTunnel"
+#define VERSION "2.4"
 #define GLOBAL_LOG_LEVEL INFO_LEVEL
 
 //custom specified path: first. (not available now.)
@@ -34,7 +37,6 @@
 #define RELATIVE_PATH_TO_SECRETS "alpaca_tunnel.d/alpaca_secrets"
 #define SECRET_NAME "alpaca_secrets"
 #define PATH_LEN 1024
-#define PROCESS_NAME "AlpacaTunnel"
 
 #define TUN_NETMASK 0xFFFF0000
 //tunnel MTU must not be greater than 1440
@@ -48,7 +50,7 @@
 //reserved ID: 0.0, 0.1, 255.255, any server/client cann't use.
 #define MAX_ID 65535
 
-#define MAX_DELAY_TIME 10  //max delay 10 seconds.
+#define MAX_DELAY_TIME 10  //max delay 10 seconds. if an packet delayed more than 10s, it will be treated as new packet.
 
 //why allow some replay packets? because peer may change devices or adjust system time/date. it's different from DoS.
 //so max replay rate is REPLAY_CNT_LIMIT per RESET_STAT_INTERVAL
@@ -61,17 +63,22 @@
 #define CHECK_RESTRICTED_IP true
 
 //numbers of packets, let's set it 20000 = 00.2*SEQ_LEVEL_1, store 20-milliseconds packets at full speed.
-//ocupy about 2*20000*1500 = 60M memory, allow max speed of about 1M/s TCP-ACK packets.
+//ocupy about 2*20000*1500 = 60M memory, allow max speed of about 1Mpps TCP-ACK packets.
 //but if don't store sent/wrote packets, 200 is enough for inter-threads buffer with 100Mbps speed.
-#define WRITE_BUF_SIZE 200
-#define SEND_BUF_SIZE  200
+#define WRITE_BUF_SIZE 20000
+#define SEND_BUF_SIZE  20000
+#define EPOLL_MAXEVENTS 1024
 
 struct packet_profile_t
 {
     uint16_t src_id;
     uint16_t dst_id;
+    uint32_t timestamp;
+    uint32_t seq;
     int send_fd;
     int write_fd;
+    int timer_fd;
+    int send_cnt;
     int len;
     struct sockaddr_in * dst_addr;
     byte * buf_packet;
@@ -92,8 +99,9 @@ static int global_running = 0;
 static int global_sysroute_change = 0;
 static int global_secret_change = 0;
 static uint16_t global_self_id = 0;
-static int global_pkt_cnt = 0;
+static uint global_pkt_cnt = 0;
 static pthread_spinlock_t global_stat_spin;
+static pthread_spinlock_t global_time_seq_spin;
 
 //in network byte order.
 static struct if_info_t global_tunif;
@@ -107,10 +115,11 @@ static char global_secrets_dir[PATH_LEN] = "\0";
 static byte global_buf_group_psk[2*AES_TEXT_LEN] = "FUCKnimadeGFW!";
 static int global_tunfd, global_sockfd;
 static uint32_t global_local_time;
-static uint32_t global_local_seq;
+//static uint32_t global_local_seq;
 static uint32_t* global_trusted_ip = NULL;
 static int global_trusted_ip_cnt = 0;
-
+static int global_epoll_fd_recv = 0;
+static int global_epoll_fd_write = 0;
 
 //client_read and client_recv are obsoleted
 void* client_read(void *arg);
@@ -120,6 +129,7 @@ void* server_read(void *arg);
 void* server_recv(void *arg);
 void* server_write(void *arg);
 void* server_send(void *arg);
+void* watch_timer_recv(void *arg);
 
 void* server_reset_stat(void *arg);
 void* watch_link_route(void *arg);
@@ -132,6 +142,8 @@ int tun_alloc(char *dev, int flags);
 int usage(char *pname);
 void sig_handler(int signum);
 int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, struct peer_profile_t ** peer_table);
+int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, struct peer_profile_t ** peer_table);
+int add_timerfd_eopll(int epfd, uint8_t type, struct ack_info_t * info);
 
 /* get next hop id form route_table or system route table
  * return value:
@@ -178,6 +190,11 @@ int main(int argc, char *argv[])
         printlog(errno, "pthread_spin_init");
         exit(1);
     }
+    if(pthread_spin_init(&global_time_seq_spin, PTHREAD_PROCESS_PRIVATE) != 0)
+    {
+        printlog(errno, "pthread_spin_init");
+        exit(1);
+    }
     if(pthread_mutex_init(&global_write_mutex, NULL) != 0)
     {
         printlog(errno, "pthread_mutex_init");
@@ -196,6 +213,19 @@ int main(int argc, char *argv[])
     if(pthread_cond_init(&global_send_cond, NULL) != 0)
     {
         printlog(errno, "pthread_cond_init");
+        exit(1);
+    }
+
+    global_epoll_fd_recv = epoll_create(1);
+    if(global_epoll_fd_recv == -1)
+    {
+        printlog(errno, "epoll_create");
+        exit(1);
+    }
+    global_epoll_fd_write = epoll_create(1);
+    if(global_epoll_fd_write == -1)
+    {
+        printlog(errno, "epoll_create");
         exit(1);
     }
 
@@ -432,8 +462,8 @@ int main(int argc, char *argv[])
         }
     }
 
-    int rc1=0, rc2=0, rc3=0, rc4=0, rc5=0, rc6=0, rc7=0, rc8=0, rc9=0;
-    pthread_t tid1=0, tid2=0, tid3=0, tid4=0, tid5=0, tid6=0, tid7=0, tid8=0, tid9=0;
+    int rc1=0, rc2=0, rc3=0, rc4=0, rc5=0, rc6=0, rc7=0, rc8=0, rc9=0, rc10=0;
+    pthread_t tid1=0, tid2=0, tid3=0, tid4=0, tid5=0, tid6=0, tid7=0, tid8=0, tid9=0, tid10=0;
 
     if( (rc1 = pthread_create(&tid1, NULL, server_recv, peer_table)) != 0 )
     {
@@ -481,6 +511,11 @@ int main(int argc, char *argv[])
         printlog(errno, "pthread_error: create rc9"); 
         goto _END;
     }
+    if( (rc10 = pthread_create(&tid10, NULL, watch_timer_recv, peer_table)) != 0 )
+    {
+        printlog(errno, "pthread_error: create rc10"); 
+        goto _END;
+    }
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
@@ -505,6 +540,7 @@ int main(int argc, char *argv[])
     pthread_cancel(tid7);
     pthread_cancel(tid8);
     pthread_cancel(tid9);
+    pthread_cancel(tid10);
     //pthread_join(tid1, NULL);
     //pthread_join(tid2, NULL);
     //pthread_join(tid3, NULL);
@@ -519,6 +555,7 @@ _END:
         free(global_trusted_ip);
     destroy_route_spin();
     pthread_spin_destroy(&global_stat_spin);
+    pthread_spin_destroy(&global_time_seq_spin);
     pthread_mutex_destroy(&global_write_mutex);
     pthread_mutex_destroy(&global_send_mutex);
     pthread_cond_destroy(&global_write_cond);
@@ -687,6 +724,7 @@ void* watch_secret(void *arg)
     return NULL;
 }
 
+//todo: add lock when update, otherwise timerfd may lost.
 void* update_secret(void *arg)
 {
     struct peer_profile_t ** peer_table = (struct peer_profile_t **)arg;
@@ -803,7 +841,7 @@ void* server_reset_stat(void *arg)
                     continue;
                 }
                 //if(pre != global_pkt_cnt)
-                if(true)
+                if(p->flow_src != NULL)
                 {
                     p->flow_src->dup_cnt = 0;
                     p->flow_src->delay_cnt = 0;
@@ -812,7 +850,7 @@ void* server_reset_stat(void *arg)
                     p->flow_src->time_min = 0;
                     p->flow_src->time_max = 0;
                 }
-                if(j%4 == 0 && p->flow_src->jump_cnt > 0)  //why 4? No why, it can be 5,6,7...100, any
+                if(j%4 == 0 && p->flow_src != NULL && p->flow_src->jump_cnt > 0)  //why 4? No why, it can be 5,6,7...100, any
                 {
                     j++;
                     p->flow_src->jump_cnt = 0;
@@ -847,8 +885,6 @@ void* server_read(void *arg)
     byte buf_header[HEADER_LEN];
     byte * buf_psk;
     int i;
-    for(i=0; i<ETH_MTU; i++)   //set random padding data
-        buf_send[i] = random();
     bzero(buf_load, TUN_MTU);
 
     while(global_running)
@@ -934,17 +970,31 @@ void* server_read(void *arg)
         header_send.ttl_flag_random.bit.ttl = TTL_MAX;
         header_send.ttl_flag_random.bit.random = 0;
         header_send.ttl_flag_random.u16 = htons(header_send.ttl_flag_random.u16);
+
         uint32_t now = time(NULL);
+        header_send.time = htonl(now);
+        if(pthread_spin_lock(&global_time_seq_spin) != 0)
+        {
+            printlog(errno, "pthread_spin_lock");
+            continue;
+        }
         if(global_local_time == now)
-            global_local_seq++;
+            peer_table[dst_id]->local_seq++;
         else
         {
-            global_local_seq = 0;
+            peer_table[dst_id]->local_seq = 0;
             global_local_time = now;
+            uint32_t * tmp_index = peer_table[dst_id]->index_array_pre;
+            peer_table[dst_id]->index_array_pre = peer_table[dst_id]->index_array_now;
+            peer_table[dst_id]->index_array_now = tmp_index;
+        }
+        header_send.seq_frag_off.bit.seq = peer_table[dst_id]->local_seq;
+        if(pthread_spin_unlock(&global_time_seq_spin) != 0)
+        {
+            printlog(errno, "pthread_spin_unlock");
+            continue;
         }
 
-        header_send.time = htonl(now);
-        header_send.seq_frag_off.bit.seq = global_local_seq;
         header_send.seq_frag_off.bit.frag = 0;
         header_send.seq_frag_off.bit.off = 0;
         header_send.seq_frag_off.u32 = htonl(header_send.seq_frag_off.u32);
@@ -975,8 +1025,11 @@ void* server_read(void *arg)
             global_send_buf[global_send_last].dst_id = dst_id;
             global_send_buf[global_send_last].send_fd = global_sockfd;
             global_send_buf[global_send_last].len = len;
+            global_send_buf[global_send_last].timestamp = now;
+            global_send_buf[global_send_last].seq = peer_table[dst_id]->local_seq;
             memcpy(global_send_buf[global_send_last].dst_addr, peeraddr, sizeof(struct sockaddr_in));
             memcpy(global_send_buf[global_send_last].buf_packet, buf_send, len);
+            peer_table[dst_id]->index_array_now[peer_table[dst_id]->local_seq] = global_send_last;
         }
 
         pthread_cond_signal(&global_send_cond);
@@ -1000,6 +1053,9 @@ void* server_send(void *arg)
 
     struct sockaddr_in *peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
     byte * buf_send = (byte *)malloc(ETH_MTU);
+    int i;
+    for(i=0; i<ETH_MTU; i++)   //set random padding data
+        buf_send[i] = random();
     int sockfd = 0;
     int len = 0;
     uint16_t dst_id = 0;
@@ -1078,11 +1134,134 @@ void* server_write(void *arg)
     return NULL;
 }
 
+void* watch_timer_recv(void *arg)
+{
+    pthread_cleanup_push(clean_lock_all, NULL);
+    struct peer_profile_t ** peer_table = (struct peer_profile_t **)arg;
+    struct epoll_event * evs = NULL;
+    evs = calloc(EPOLL_MAXEVENTS, sizeof(struct epoll_event));
+    uint64_t read_buf;
+    uint16_t len_load, nr_aes_block, bigger_id;
+    struct tunnel_header_t header_send;
+    struct ack_msg_t ack_msg;
+    byte * buf_load = (byte *)malloc(TUN_MTU);
+    byte * buf_send = (byte *)malloc(ETH_MTU);
+    byte buf_header[HEADER_LEN];
+    byte * buf_psk;
+    int i;
+    for(i=0; i<ETH_MTU; i++)   //set random padding data
+        buf_send[i] = random();
+    bzero(buf_load, TUN_MTU);
+
+    while(global_running)
+    {
+        int n = epoll_wait(global_epoll_fd_recv, evs, EPOLL_MAXEVENTS, -1);
+        if(n == -1)
+        {
+            printlog(errno, "epoll_wait");
+            continue;
+        }
+        
+        int i;
+        for(i = 0; i < n; i++)
+        {
+            struct ack_info_t * tc = (struct ack_info_t *)(evs[i].data.ptr);
+            uint16_t ack_id = tc->src_id;
+            if(read(tc->fd, &read_buf, sizeof(uint64_t)) < 0)
+                continue;
+
+            //to do:
+            //for HEAD_TYPE_MSG packets, don't assign a seq number. this may be a weakness.
+            //or use msg_seq/data_seq instead of local_seq.
+
+            uint32_t now = time(NULL);
+            header_send.time = htonl(now);
+            //if(pthread_spin_lock(&global_time_seq_spin) != 0)
+            //{
+            //    printlog(errno, "pthread_spin_lock");
+            //    continue;
+            //}
+            //if(global_local_time == now)
+            //    peer_table[ack_id]->local_seq++;
+            //else
+            //{
+            //    peer_table[ack_id]->local_seq = 0;
+            //    global_local_time = now;
+            //}
+            //header_send.seq_frag_off.bit.seq = peer_table[ack_id]->local_seq;
+            header_send.seq_frag_off.bit.seq = 0;
+            //if(pthread_spin_unlock(&global_time_seq_spin) != 0)
+            //{
+            //    printlog(errno, "pthread_spin_unlock");
+            //    continue;
+            //}
+            header_send.seq_frag_off.bit.frag = 0;
+            header_send.seq_frag_off.bit.off = 0;
+            header_send.seq_frag_off.u32 = htonl(header_send.seq_frag_off.u32);
+
+            len_load = sizeof(struct ack_msg_t);
+            header_send.m_type_len.bit.m = HEAD_MORE_FALSE;
+            header_send.m_type_len.bit.type = HEAD_TYPE_MSG;
+            header_send.m_type_len.bit.len = len_load;
+            header_send.m_type_len.u16 = htons(header_send.m_type_len.u16);
+            header_send.ttl_flag_random.bit.ttl = TTL_MIN;
+            header_send.ttl_flag_random.bit.random = 0;
+            header_send.ttl_flag_random.u16 = htons(header_send.ttl_flag_random.u16);
+            header_send.dst_id = htons(ack_id);
+            header_send.src_id = htons(global_self_id);
+            
+            ack_msg.src_id = htons(tc->src_id);
+            ack_msg.dst_id = htons(tc->dst_id);
+            ack_msg.ack_type = htonl(tc->type);
+            ack_msg.timestamp = htonl(tc->timestamp);
+            ack_msg.seq = tc->seq;
+            ack_msg.seq = htonl(ack_msg.seq);
+            memcpy(buf_load, &ack_msg, len_load);
+
+            bigger_id = ack_id > global_self_id ? ack_id : global_self_id;
+            if(NULL == peer_table[bigger_id])
+            {
+                printlog(INFO_LEVEL, "tunif %s read ack message to invalid peer: %d.%d!\n", global_tunif.name, bigger_id/256, bigger_id%256);
+                continue;
+            }
+            buf_psk = peer_table[bigger_id]->psk;
+            memcpy(buf_header, &header_send, HEADER_LEN);
+            encrypt(buf_send, buf_header, global_buf_group_psk, AES_KEY_LEN);  //encrypt header with group PSK
+            encrypt(buf_send+HEADER_LEN, buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
+
+            nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
+            int j;
+            for(j=0; j<nr_aes_block; j++)
+                encrypt(buf_send+HEADER_LEN+ICV_LEN+j*AES_TEXT_LEN, buf_load+j*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
+
+            int len = HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN;
+            int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
+            if(sendto(global_sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peer_table[ack_id]->peeraddr, sizeof(struct sockaddr)) < 0 )
+                printlog(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, ack_id/256, ack_id%256);
+
+            if(tc->cnt >= 3)
+            {
+                close(tc->fd);
+                tc->fd = 0;
+            }
+            else
+                tc->cnt++;
+        }
+        bzero(evs, n*sizeof(struct epoll_event));
+    }
+
+    free(buf_send);
+    free(buf_load);
+    pthread_cleanup_pop(0);
+    return NULL;
+}
+
 void* server_recv(void *arg)
 {
     pthread_cleanup_push(clean_lock_all, NULL);
     struct tunnel_header_t header_recv, header_send;
     struct peer_profile_t ** peer_table = (struct peer_profile_t **)arg;
+    struct ack_msg_t ack_msg;
     uint16_t next_id = 0;
     uint16_t dst_id = 0;
     uint16_t src_id = 0;
@@ -1095,11 +1274,13 @@ void* server_recv(void *arg)
     struct ip_dot_decimal_t ip_saddr;
     uint16_t len_load, nr_aes_block;
     uint nr_aes_block_ipv4_header = (IPV4_HEAD_LEN + TCP_HEAD_LEN + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
-    int i;
     byte * buf_psk;
     byte * buf_recv = (byte *)malloc(ETH_MTU);
     byte * buf_load = (byte *)malloc(TUN_MTU);
-    //byte buf_send[TUN_MTU];
+    byte * buf_send = (byte *)malloc(ETH_MTU);
+    int i, type;
+    for(i=0; i<ETH_MTU; i++)   //set random padding data
+        buf_send[i] = random();
     byte buf_header[HEADER_LEN];
     byte buf_icv[ICV_LEN];
 
@@ -1107,7 +1288,7 @@ void* server_recv(void *arg)
     {
         if(recvfrom(global_sockfd, buf_recv, ETH_MTU, 0, (struct sockaddr *)peeraddr, &peeraddr_len) < HEADER_LEN+ICV_LEN)
         {
-            printlog(errno, "tunif %s recvfrom socket error", global_tunif.name);
+            printlog(INFO_LEVEL, "tunif %s recvfrom socket error\n", global_tunif.name);
             continue;
         }
 
@@ -1166,7 +1347,84 @@ void* server_recv(void *arg)
 
         header_recv.m_type_len.u16 = ntohs(header_recv.m_type_len.u16);
         len_load = header_recv.m_type_len.bit.len;
+        type = header_recv.m_type_len.bit.type;
         nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
+
+        if(type == HEAD_TYPE_MSG)
+        {
+            if(nr_aes_block > 10)
+            {
+                printlog(INFO_LEVEL, "msg too long, drop it!\n");
+                continue;
+            }
+            //printf("============== recv msg type\n");
+            for(i=0; i<nr_aes_block; i++)
+                decrypt(buf_load+i*AES_TEXT_LEN, buf_recv+HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
+            memcpy(&ack_msg, buf_load, len_load);
+            ack_msg.src_id = htons(ack_msg.src_id);
+            ack_msg.dst_id = htons(ack_msg.dst_id);
+            ack_msg.ack_type = htonl(ack_msg.ack_type);
+            ack_msg.timestamp = htonl(ack_msg.timestamp);
+            ack_msg.seq = htonl(ack_msg.seq);
+            //printf("type: %d\n", ack_msg.ack_type);
+            //printf("pkt from %d.%d to %d.%d lost\n", ack_msg.src_id/256, ack_msg.src_id%256, ack_msg.dst_id/256, ack_msg.dst_id%256);
+            //printf("pkt time: %d, seq: %d\n", ack_msg.timestamp, ack_msg.seq_frag_off.bit.seq);
+
+            if(ack_msg.ack_type == TIMER_TYPE_LAST)
+                continue;
+            uint32_t * index_array_pre = peer_table[ack_msg.dst_id]->index_array_pre;
+            uint32_t * index_array_now = peer_table[ack_msg.dst_id]->index_array_now;
+            if(ack_msg.timestamp == global_local_time)
+            {
+                //printf("time == \n");
+            }
+            else if(ack_msg.timestamp == (global_local_time-1))
+            {
+                //printf("time -- \n");
+            }
+            else
+            {
+                //printf("time ------ \n");
+                continue;
+            }
+            if(ack_msg.seq > SEQ_LEVEL_1)
+                continue;
+
+            uint32_t buf_index_pre = index_array_pre[ack_msg.seq];
+            uint32_t buf_index_now = index_array_now[ack_msg.seq];
+            if(buf_index_pre > SEND_BUF_SIZE || buf_index_now > SEND_BUF_SIZE)
+                continue;
+
+            uint32_t buf_index;
+            if(global_send_buf[buf_index_pre].dst_id == ack_msg.dst_id && 
+                global_send_buf[buf_index_pre].src_id == ack_msg.src_id &&
+                global_send_buf[buf_index_pre].timestamp == ack_msg.timestamp &&
+                global_send_buf[buf_index_pre].seq == ack_msg.seq)
+            {
+                buf_index = buf_index_pre;
+            }
+            else if(global_send_buf[buf_index_now].dst_id == ack_msg.dst_id && 
+                global_send_buf[buf_index_now].src_id == ack_msg.src_id &&
+                global_send_buf[buf_index_now].timestamp == ack_msg.timestamp &&
+                global_send_buf[buf_index_now].seq == ack_msg.seq)
+            {
+                buf_index = buf_index_now;
+            }
+            else
+                continue;  
+
+            int sockfd = global_send_buf[buf_index].send_fd;
+            int len = global_send_buf[buf_index].len;
+            dst_id = global_send_buf[buf_index].dst_id;
+            memcpy(peeraddr, global_send_buf[buf_index].dst_addr, sizeof(struct sockaddr_in));
+            memcpy(buf_send, global_send_buf[buf_index].buf_packet, len);
+        
+            int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
+            if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
+                printlog(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
+
+            continue;
+        }
         
         uint32_t pkt_time = ntohl(header_recv.time);
         header_recv.seq_frag_off.u32 = ntohl(header_recv.seq_frag_off.u32);
@@ -1206,6 +1464,8 @@ void* server_recv(void *arg)
         if(fs < 0)
             continue;
 
+        check_timerfd(pkt_time, pkt_seq, src_id, dst_id, peer_table);
+        
         for(i=0; i<nr_aes_block_ipv4_header; i++)
             decrypt(buf_load+i*AES_TEXT_LEN, buf_recv+HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
         
@@ -1371,16 +1631,169 @@ void* server_recv(void *arg)
     free(peeraddr);
     free(buf_recv);
     free(buf_load);
+    free(buf_send);
     pthread_cleanup_pop(0);
     return NULL;
 }
 
-//need to filter 2 elements:pkt_time and pkt_seq;
-//pkt_time can NOT run too fast, if faster than system, let's call it a jump. if too many jumps, then it may be an attack.
-//pkt_seq can NOT duplicate.
+int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, struct peer_profile_t ** peer_table)
+{
+    struct timer_info_t * ti = peer_table[src_id]->timer_info;
+    struct flow_profile_t * fp = peer_table[src_id]->flow_src;
+    struct bit_array_t * ba = NULL;
+    
+    int time_diff = pkt_time - ti->time_now;
+    if(time_diff >= 1 || time_diff <= -MAX_DELAY_TIME)
+    {
+        if(time_diff == 1)
+        {
+            close_all_timerfd(ti->timerfd_pre, SEQ_LEVEL_1);  //this function slows down the tunnel from 100% to about 98% bps. don't care it now.
+            struct ack_info_t * tmp_info = ti->timerfd_pre;
+            ti->timerfd_pre = ti->timerfd_now;
+            ti->timerfd_now = tmp_info;
+            ti->max_ack_pre = ti->max_ack_now;
+            ti->max_ack_now = pkt_seq;
+        }
+        else
+        {
+            close_all_timerfd(ti->timerfd_pre, SEQ_LEVEL_1);
+            close_all_timerfd(ti->timerfd_now, SEQ_LEVEL_1);
+            ti->max_ack_pre = 0;
+            ti->max_ack_now = pkt_seq;
+        }
+
+        ti->time_now = pkt_time;
+        ti->time_pre = pkt_time - 1;
+        
+        struct ack_info_t * info_array = ti->timerfd_now;
+        
+        int i;
+        for(i = 0; i < pkt_seq; i++)
+        {
+            info_array[i].cnt = 0;
+            info_array[i].src_id = src_id;
+            info_array[i].dst_id = dst_id;
+            info_array[i].timestamp = pkt_time;
+            info_array[i].seq = i;
+            add_timerfd_eopll(global_epoll_fd_recv, TIMER_TYPE_MID, &(info_array[i]));
+        }
+
+        info_array[pkt_seq].cnt = 0;
+        info_array[pkt_seq].src_id = src_id;
+        info_array[pkt_seq].dst_id = dst_id;
+        info_array[pkt_seq].timestamp = pkt_time;
+        info_array[pkt_seq].seq = pkt_seq;
+        add_timerfd_eopll(global_epoll_fd_recv, TIMER_TYPE_LAST, &(info_array[pkt_seq]));
+    }
+    else if(time_diff == 0 || time_diff == -1)
+    {
+        uint32_t max_ack = 0;
+        struct ack_info_t * info_array = NULL;
+        if(time_diff == 0)
+        {
+            info_array = ti->timerfd_now;
+            max_ack = ti->max_ack_now;
+            if(pkt_seq > max_ack)
+                ti->max_ack_now = pkt_seq;
+            ba = fp->ba_now;
+        }
+        else if(time_diff == -1)
+        {
+            info_array = ti->timerfd_pre;
+            max_ack = ti->max_ack_pre;
+            if(pkt_seq > max_ack)
+                ti->max_ack_pre = pkt_seq;
+            ba = fp->ba_pre;
+        }
+
+        //if(pkt_seq == max_ack), do nothing.
+        if(pkt_seq < max_ack && info_array[pkt_seq].fd != 0)
+        {
+            //printf("close: mid %d\n", pkt_seq);
+            close(info_array[pkt_seq].fd);
+            info_array[pkt_seq].fd = 0;
+        }
+        else if(pkt_seq > max_ack)
+        {
+            //printf("close: max %d\n", max_ack);
+            close(info_array[max_ack].fd);
+            info_array[max_ack].fd = 0;
+
+            info_array[pkt_seq].cnt = 0;
+            info_array[pkt_seq].src_id = src_id;
+            info_array[pkt_seq].dst_id = dst_id;
+            info_array[pkt_seq].timestamp = pkt_time;
+            info_array[pkt_seq].seq = pkt_seq;
+            add_timerfd_eopll(global_epoll_fd_recv, TIMER_TYPE_LAST, &(info_array[pkt_seq]));
+
+            int i;
+            for(i = max_ack+1; i < pkt_seq; i++)
+            {
+                //if HEAD_TYPE_MSG/HEAD_TYPE_DATA share the same seq number, it will be diffict to handle here.
+                //if the msg lost, there will be a timerfd too, that's wrong.
+                if(bit_array_get(ba, i) == 0)
+                {
+                    info_array[i].cnt = 0;
+                    info_array[i].src_id = src_id;
+                    info_array[i].dst_id = dst_id;
+                    info_array[i].timestamp = pkt_time;
+                    info_array[i].seq = i;
+                    add_timerfd_eopll(global_epoll_fd_recv, TIMER_TYPE_MID, &(info_array[i]));
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+//this function slows down the tunnel from 100% to 70% bps. should rewrite it latter.
+int add_timerfd_eopll(int epfd, uint8_t type, struct ack_info_t * info)
+{
+    struct itimerspec new_value;
+    new_value.it_value.tv_sec = 0;
+    new_value.it_value.tv_nsec = 30000000;
+    new_value.it_interval.tv_sec = 0;
+    new_value.it_interval.tv_nsec = 40000000;
+
+    int fd = timerfd_create(CLOCK_MONOTONIC, 0);
+    if(fd == -1)
+    {
+        printlog(errno, "timerfd_create");
+        return -1;
+    }
+    if(timerfd_settime(fd, 0, &new_value, NULL) == -1)
+    {
+        printlog(errno, "timerfd_settime");
+        close(fd);
+        return -1;
+    }
+    info->fd = fd;
+    info->type = type;
+    
+    struct epoll_event ev;
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data.ptr = (void *)info;
+    if(epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev) == -1)
+    {
+        printlog(errno, "epoll_ctl");
+        close(fd);
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
+  need to filter 2 elements:pkt_time and pkt_seq;
+  1) pkt_time can NOT run too fast, if faster than system, let's call it a jump. if too many jumps, then it may be an attack.
+  2) pkt_seq can NOT duplicate.
+
+  return value: return 0, valid packet; return negative number, invalid packet.
+  invalid packets will be droped.
+*/
 int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, struct peer_profile_t ** peer_table)
 {
-    //there should be an spin lock
     global_pkt_cnt++;
     struct flow_profile_t * fp = NULL;
 

@@ -1,10 +1,14 @@
 Todo list:
 1. multi-user ---- done
-2. tcp optimization
+2. tcp optimization ---- done
 3. anti-replay ----done
 4. obfuscation
 5. android/iOS
 6. IPv6
+
+
+2.4 2016-03-30
+- add tcp optimization: resend packet before tcp retransmission
 
 
 2.3 2016-03-07

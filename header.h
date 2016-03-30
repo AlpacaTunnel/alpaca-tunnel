@@ -1,6 +1,8 @@
 #ifndef HEADER_H_
 #define HEADER_H_
 
+//this file define the header in Header_format.png
+
 #define HEADER_LEN 16
 #define ICV_LEN 16
 #define HEAD_MORE_FALSE 0
@@ -10,8 +12,16 @@
 #define HEAD_FRAG_FALSE 0
 #define HEAD_FRAG_TRUE  1
 
+#define TIMER_TYPE_MID 0
+#define TIMER_TYPE_LAST 1
+
 #define TTL_MAX 0xF
 #define TTL_MIN 0
+
+/*
+  type: 0, data
+  type: 1, ack_msg
+*/
 
 struct m_type_len_t
 {
@@ -67,5 +77,18 @@ struct tunnel_header_t
     seq_frag_off_u seq_frag_off;
 } __attribute__((packed));
 
+
+/*
+  ack_type: 0, middle packet lost
+  ack_type: 1, last packet recived
+*/
+struct ack_msg_t
+{
+    uint16_t src_id;
+    uint16_t dst_id;
+    uint32_t ack_type;
+    uint32_t timestamp;
+    uint32_t seq;
+} __attribute__((packed));
 
 #endif
