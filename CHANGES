@@ -7,6 +7,10 @@ Todo list:
 6. IPv6
 
 
+2.4.1 2016-03-31
+- timer array: bug fix
+
+
 2.4 2016-03-30
 - add tcp optimization: resend packet before tcp retransmission
 

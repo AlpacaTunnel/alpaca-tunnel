@@ -25,7 +25,7 @@
 #endif
 
 #define PROCESS_NAME "AlpacaTunnel"
-#define VERSION "2.4"
+#define VERSION "2.4.1"
 #define GLOBAL_LOG_LEVEL INFO_LEVEL
 
 //custom specified path: first. (not available now.)
@@ -68,6 +68,9 @@
 #define WRITE_BUF_SIZE 20000
 #define SEND_BUF_SIZE  20000
 #define EPOLL_MAXEVENTS 1024
+#define ACK_NUM 3
+#define ACK_FIRST_TIME 30000000
+#define ACK_INTERVAL 40000000
 
 struct packet_profile_t
 {
@@ -995,6 +998,12 @@ void* server_read(void *arg)
             continue;
         }
 
+        if(peer_table[dst_id]->local_seq > SEQ_LEVEL_1)
+        {
+            printlog(INFO_LEVEL, "local_seq beyond limit, drop this packet to dst_id: %d.%d\n", dst_id/256, dst_id%256);
+            continue;
+        }
+
         header_send.seq_frag_off.bit.frag = 0;
         header_send.seq_frag_off.bit.off = 0;
         header_send.seq_frag_off.u32 = htonl(header_send.seq_frag_off.u32);
@@ -1176,25 +1185,7 @@ void* watch_timer_recv(void *arg)
 
             uint32_t now = time(NULL);
             header_send.time = htonl(now);
-            //if(pthread_spin_lock(&global_time_seq_spin) != 0)
-            //{
-            //    printlog(errno, "pthread_spin_lock");
-            //    continue;
-            //}
-            //if(global_local_time == now)
-            //    peer_table[ack_id]->local_seq++;
-            //else
-            //{
-            //    peer_table[ack_id]->local_seq = 0;
-            //    global_local_time = now;
-            //}
-            //header_send.seq_frag_off.bit.seq = peer_table[ack_id]->local_seq;
             header_send.seq_frag_off.bit.seq = 0;
-            //if(pthread_spin_unlock(&global_time_seq_spin) != 0)
-            //{
-            //    printlog(errno, "pthread_spin_unlock");
-            //    continue;
-            //}
             header_send.seq_frag_off.bit.frag = 0;
             header_send.seq_frag_off.bit.off = 0;
             header_send.seq_frag_off.u32 = htonl(header_send.seq_frag_off.u32);
@@ -1239,7 +1230,7 @@ void* watch_timer_recv(void *arg)
             if(sendto(global_sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peer_table[ack_id]->peeraddr, sizeof(struct sockaddr)) < 0 )
                 printlog(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, ack_id/256, ack_id%256);
 
-            if(tc->cnt >= 3)
+            if(tc->cnt >= (ACK_NUM-1))
             {
                 close(tc->fd);
                 tc->fd = 0;
@@ -1641,6 +1632,13 @@ int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t
     struct timer_info_t * ti = peer_table[src_id]->timer_info;
     struct flow_profile_t * fp = peer_table[src_id]->flow_src;
     struct bit_array_t * ba = NULL;
+
+    if(pkt_seq >= ti->timer_size)
+    {
+        printlog(INFO_LEVEL, "pkt_seq beyond timer_size, ignore this packet from %d.%d to %d.%d\n", 
+            src_id/256, src_id%256, dst_id/256, dst_id%256);
+        return 0;
+    }
     
     int time_diff = pkt_time - ti->time_now;
     if(time_diff >= 1 || time_diff <= -MAX_DELAY_TIME)
@@ -1750,11 +1748,14 @@ int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t
 //this function slows down the tunnel from 100% to 70% bps. should rewrite it latter.
 int add_timerfd_eopll(int epfd, uint8_t type, struct ack_info_t * info)
 {
+    if(type == TIMER_TYPE_LAST)  //don't handle it now.
+        return 0;
+
     struct itimerspec new_value;
     new_value.it_value.tv_sec = 0;
-    new_value.it_value.tv_nsec = 30000000;
+    new_value.it_value.tv_nsec = ACK_FIRST_TIME;
     new_value.it_interval.tv_sec = 0;
-    new_value.it_interval.tv_nsec = 40000000;
+    new_value.it_interval.tv_nsec = ACK_INTERVAL;
 
     int fd = timerfd_create(CLOCK_MONOTONIC, 0);
     if(fd == -1)

@@ -68,7 +68,9 @@ struct peer_profile_t* add_peer()
     else
         bzero(p->timer_info, sizeof(struct timer_info_t));
 
-    p->timer_info->timerfd_pre = (struct ack_info_t *)malloc((SEQ_LEVEL_1+1) * sizeof(struct ack_info_t));
+    p->timer_info->timer_size = SEQ_LEVEL_1;
+
+    p->timer_info->timerfd_pre = (struct ack_info_t *)malloc((p->timer_info->timer_size + 1) * sizeof(struct ack_info_t));
     if(p->timer_info->timerfd_pre == NULL)
     {
         printlog(errno, "add_peer: malloc failed");
@@ -76,9 +78,9 @@ struct peer_profile_t* add_peer()
         return NULL;
     }
     else
-        bzero(p->timer_info->timerfd_pre, (SEQ_LEVEL_1+1) * sizeof(struct ack_info_t));
+        bzero(p->timer_info->timerfd_pre, (p->timer_info->timer_size + 1) * sizeof(struct ack_info_t));
 
-    p->timer_info->timerfd_now = (struct ack_info_t *)malloc((SEQ_LEVEL_1+1) * sizeof(struct ack_info_t));
+    p->timer_info->timerfd_now = (struct ack_info_t *)malloc((p->timer_info->timer_size + 1) * sizeof(struct ack_info_t));
     if(p->timer_info->timerfd_now == NULL)
     {
         printlog(errno, "add_peer: malloc failed");
@@ -86,7 +88,7 @@ struct peer_profile_t* add_peer()
         return NULL;
     }
     else
-        bzero(p->timer_info->timerfd_now, (SEQ_LEVEL_1+1) * sizeof(struct ack_info_t));
+        bzero(p->timer_info->timerfd_now, (p->timer_info->timer_size +1 ) * sizeof(struct ack_info_t));
 
     p->flow_src = (struct flow_profile_t *)malloc(sizeof(struct flow_profile_t));
     if(p->flow_src == NULL)

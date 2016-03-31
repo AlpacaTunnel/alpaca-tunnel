@@ -45,6 +45,7 @@ struct ack_info_t
 struct timer_info_t
 {
     int fd_cnt;
+    uint32_t timer_size;
     uint32_t time_pre;
     uint32_t time_now;
     uint32_t max_ack_pre;
