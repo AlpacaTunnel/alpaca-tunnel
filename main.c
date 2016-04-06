@@ -25,7 +25,7 @@
 #endif
 
 #define PROCESS_NAME "AlpacaTunnel"
-#define VERSION "2.4.1"
+#define VERSION "2.4.2"
 #define GLOBAL_LOG_LEVEL INFO_LEVEL
 
 //custom specified path: first. (not available now.)
