@@ -65,7 +65,7 @@ struct peer_profile_t
     uint16_t srtt;
     uint64_t total_pkt_cnt;
     uint32_t local_seq;
-    uint32_t * index_array_pre;
+    uint32_t * index_array_pre;  //sore the indexes of sent packets in global buf
     uint32_t * index_array_now;
     struct timer_info_t * timer_info;
     struct flow_profile_t * flow_src;  //for flow that dst==0, src->0

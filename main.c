@@ -68,7 +68,7 @@
 #define WRITE_BUF_SIZE 20000
 #define SEND_BUF_SIZE  20000
 #define EPOLL_MAXEVENTS 1024
-#define ACK_NUM 3
+#define ACK_NUM 5
 #define ACK_FIRST_TIME 30000000
 #define ACK_INTERVAL 40000000
 
@@ -728,6 +728,7 @@ void* watch_secret(void *arg)
 }
 
 //todo: add lock when update, otherwise timerfd may lost.
+//for other data or status, there is no big issue.
 void* update_secret(void *arg)
 {
     struct peer_profile_t ** peer_table = (struct peer_profile_t **)arg;
@@ -745,6 +746,10 @@ void* update_secret(void *arg)
                 printlog(ERROR_LEVEL, "error when update secret file!\n");
             else
                 printlog(INFO_LEVEL, "FILE: secret file reloaded!\n");
+
+            if(NULL == peer_table[global_self_id])
+                printlog(ERROR_LEVEL, "update_secret error: didn't find self profile in secert file!\n");
+    
             if(CHECK_RESTRICTED_IP)
             {
                 global_trusted_ip_cnt = 0;
@@ -753,6 +758,8 @@ void* update_secret(void *arg)
                 for(i = 0; i < MAX_ID+1; i++)
                     if(peer_table[i] != NULL && peer_table[i]->peeraddr != NULL && peer_table[i]->peeraddr->sin_addr.s_addr != 0)
                     {
+                        if(global_trusted_ip_cnt > MAX_ID)
+                            continue;
                         global_trusted_ip[global_trusted_ip_cnt] = peer_table[i]->peeraddr->sin_addr.s_addr;
                         global_trusted_ip_cnt++;
                     }
@@ -1333,7 +1340,7 @@ void* server_recv(void *arg)
         }
         //store the src's UDP socket only when src_id is bigger.
         //otherwise, the bigger id may forge any smaller id's source address.
-        if(src_id > dst_id)
+        if(src_id > dst_id && !(peer_table[src_id]->restricted))
             memcpy(peer_table[src_id]->peeraddr, peeraddr, sizeof(struct sockaddr_in));
 
         header_recv.m_type_len.u16 = ntohs(header_recv.m_type_len.u16);
@@ -1345,7 +1352,7 @@ void* server_recv(void *arg)
         {
             if(nr_aes_block > 10)
             {
-                printlog(INFO_LEVEL, "msg too long, drop it!\n");
+                printlog(INFO_LEVEL, "msg too long, drop it now! will handle it when msg has seq number in header.\n");
                 continue;
             }
             //printf("============== recv msg type\n");
@@ -1361,10 +1368,6 @@ void* server_recv(void *arg)
             //printf("pkt from %d.%d to %d.%d lost\n", ack_msg.src_id/256, ack_msg.src_id%256, ack_msg.dst_id/256, ack_msg.dst_id%256);
             //printf("pkt time: %d, seq: %d\n", ack_msg.timestamp, ack_msg.seq_frag_off.bit.seq);
 
-            if(ack_msg.ack_type == TIMER_TYPE_LAST)
-                continue;
-            uint32_t * index_array_pre = peer_table[ack_msg.dst_id]->index_array_pre;
-            uint32_t * index_array_now = peer_table[ack_msg.dst_id]->index_array_now;
             if(ack_msg.timestamp == global_local_time)
             {
                 //printf("time == \n");
@@ -1378,41 +1381,60 @@ void* server_recv(void *arg)
                 //printf("time ------ \n");
                 continue;
             }
-            if(ack_msg.seq > SEQ_LEVEL_1)
-                continue;
 
-            uint32_t buf_index_pre = index_array_pre[ack_msg.seq];
-            uint32_t buf_index_now = index_array_now[ack_msg.seq];
-            if(buf_index_pre > SEND_BUF_SIZE || buf_index_now > SEND_BUF_SIZE)
-                continue;
-
-            uint32_t buf_index;
-            if(global_send_buf[buf_index_pre].dst_id == ack_msg.dst_id && 
-                global_send_buf[buf_index_pre].src_id == ack_msg.src_id &&
-                global_send_buf[buf_index_pre].timestamp == ack_msg.timestamp &&
-                global_send_buf[buf_index_pre].seq == ack_msg.seq)
+            int max_seq = 0, min_seq = 0;
+            if(ack_msg.ack_type == TIMER_TYPE_LAST)
             {
-                buf_index = buf_index_pre;
-            }
-            else if(global_send_buf[buf_index_now].dst_id == ack_msg.dst_id && 
-                global_send_buf[buf_index_now].src_id == ack_msg.src_id &&
-                global_send_buf[buf_index_now].timestamp == ack_msg.timestamp &&
-                global_send_buf[buf_index_now].seq == ack_msg.seq)
-            {
-                buf_index = buf_index_now;
+                min_seq = ack_msg.seq + 1;
+                max_seq = (ack_msg.seq + 10) < peer_table[ack_msg.dst_id]->local_seq ? (ack_msg.seq + 10) : peer_table[ack_msg.dst_id]->local_seq;  //may adjust the num 10.
             }
             else
-                continue;  
+            {
+                min_seq = ack_msg.seq;
+                max_seq = ack_msg.seq;
+            }
+            if(max_seq > SEQ_LEVEL_1)
+                continue;
 
-            int sockfd = global_send_buf[buf_index].send_fd;
-            int len = global_send_buf[buf_index].len;
-            dst_id = global_send_buf[buf_index].dst_id;
-            memcpy(peeraddr, global_send_buf[buf_index].dst_addr, sizeof(struct sockaddr_in));
-            memcpy(buf_send, global_send_buf[buf_index].buf_packet, len);
-        
-            int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
-            if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
-                printlog(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
+            int seq;
+            for(seq = min_seq; seq <= max_seq; seq++)
+            {
+                uint32_t * index_array_pre = peer_table[ack_msg.dst_id]->index_array_pre;
+                uint32_t * index_array_now = peer_table[ack_msg.dst_id]->index_array_now;
+                
+                uint32_t buf_index_pre = index_array_pre[seq];
+                uint32_t buf_index_now = index_array_now[seq];
+                if(buf_index_pre > SEND_BUF_SIZE || buf_index_now > SEND_BUF_SIZE)
+                    continue;
+    
+                uint32_t buf_index;
+                if(global_send_buf[buf_index_pre].dst_id == ack_msg.dst_id && 
+                    global_send_buf[buf_index_pre].src_id == ack_msg.src_id &&
+                    global_send_buf[buf_index_pre].timestamp == ack_msg.timestamp &&
+                    global_send_buf[buf_index_pre].seq == seq)
+                {
+                    buf_index = buf_index_pre;
+                }
+                else if(global_send_buf[buf_index_now].dst_id == ack_msg.dst_id && 
+                    global_send_buf[buf_index_now].src_id == ack_msg.src_id &&
+                    global_send_buf[buf_index_now].timestamp == ack_msg.timestamp &&
+                    global_send_buf[buf_index_now].seq == seq)
+                {
+                    buf_index = buf_index_now;
+                }
+                else
+                    continue;  
+    
+                int sockfd = global_send_buf[buf_index].send_fd;
+                int len = global_send_buf[buf_index].len;
+                dst_id = global_send_buf[buf_index].dst_id;
+                memcpy(peeraddr, global_send_buf[buf_index].dst_addr, sizeof(struct sockaddr_in));
+                memcpy(buf_send, global_send_buf[buf_index].buf_packet, len);
+            
+                int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
+                if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
+                    printlog(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
+            }
 
             continue;
         }
@@ -1455,6 +1477,7 @@ void* server_recv(void *arg)
         if(fs < 0)
             continue;
 
+        //todo: do I need to add a lock here?
         check_timerfd(pkt_time, pkt_seq, src_id, dst_id, peer_table);
         
         for(i=0; i<nr_aes_block_ipv4_header; i++)
@@ -1748,9 +1771,6 @@ int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t
 //this function slows down the tunnel from 100% to 70% bps. should rewrite it latter.
 int add_timerfd_eopll(int epfd, uint8_t type, struct ack_info_t * info)
 {
-    if(type == TIMER_TYPE_LAST)  //don't handle it now.
-        return 0;
-
     struct itimerspec new_value;
     new_value.it_value.tv_sec = 0;
     new_value.it_value.tv_nsec = ACK_FIRST_TIME;

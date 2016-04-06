@@ -169,7 +169,6 @@ int delete_peer(struct peer_profile_t* p)
         }
         free(p->timer_info);
     }
-    
 
     if(p->flow_src != NULL)
     {
@@ -183,6 +182,7 @@ int delete_peer(struct peer_profile_t* p)
     return 0;
 }
 
+//note: file descriptors in dst will/must be closed, FD in src will be changed to NUL.
 int copy_peer(struct peer_profile_t* dst, struct peer_profile_t* src)
 {
     if(dst == NULL || src == NULL)
@@ -194,6 +194,18 @@ int copy_peer(struct peer_profile_t* dst, struct peer_profile_t* src)
     if(dst->peeraddr == NULL || src->peeraddr == NULL)
     {
         printlog(ERROR_LEVEL, "error copy_peer: dst->peeraddr or src->peeraddr is NULL\n");
+        return -1;
+    }
+
+    if(dst->index_array_pre == NULL || src->index_array_pre == NULL)
+    {
+        printlog(ERROR_LEVEL, "error copy_peer: dst->index_array_pre or src->index_array_pre is NULL\n");
+        return -1;
+    }
+
+    if(dst->index_array_now == NULL || src->index_array_now == NULL)
+    {
+        printlog(ERROR_LEVEL, "error copy_peer: dst->index_array_now or src->index_array_now is NULL\n");
         return -1;
     }
 
@@ -221,26 +233,43 @@ int copy_peer(struct peer_profile_t* dst, struct peer_profile_t* src)
         return -1;
     }
 
-    dst->id           = src->id;
-    dst->valid        = src->valid;
-    dst->discard      = src->discard;
-    dst->restricted   = src->restricted;
-    dst->dup          = src->dup;
-    dst->srtt         = src->srtt;
-    dst->involve_cnt  = src->involve_cnt;
-    dst->port         = src->port;
-    dst->vip          = src->vip;
-    dst->rip          = src->rip;
+    dst->id             = src->id;
+    dst->valid          = src->valid;
+    dst->discard        = src->discard;
+    dst->restricted     = src->restricted;
+    dst->dup            = src->dup;
+    dst->srtt           = src->srtt;
+    dst->total_pkt_cnt  = src->total_pkt_cnt;
+    dst->local_seq      = src->local_seq;
+    dst->involve_cnt    = src->involve_cnt;
+    dst->port           = src->port;
+    dst->vip            = src->vip;
+    dst->rip            = src->rip;
 
     memcpy(dst->psk, src->psk, 2*AES_TEXT_LEN);
     memcpy(dst->peeraddr, src->peeraddr, sizeof(struct sockaddr_in));
+    
+    uint32_t * index_array_tmp;
+    index_array_tmp = dst->index_array_pre;
+    dst->index_array_pre = src->index_array_pre;
+    src->index_array_pre = index_array_tmp;
+    index_array_tmp = dst->index_array_now;
+    dst->index_array_now = src->index_array_now;
+    src->index_array_now = index_array_tmp;
 
     dst->timer_info->time_pre = src->timer_info->time_pre;
     dst->timer_info->time_now = src->timer_info->time_now;
-    close_all_timerfd(dst->timer_info->timerfd_pre, (SEQ_LEVEL_1+1));
-    close_all_timerfd(dst->timer_info->timerfd_now, (SEQ_LEVEL_1+1));
-    memcpy(dst->timer_info->timerfd_pre, src->timer_info->timerfd_pre, (SEQ_LEVEL_1+1) * sizeof(int));
-    memcpy(dst->timer_info->timerfd_now, src->timer_info->timerfd_now, (SEQ_LEVEL_1+1) * sizeof(int));
+
+    struct ack_info_t * timerfd_tmp;
+    timerfd_tmp = dst->timer_info->timerfd_pre;
+    dst->timer_info->timerfd_pre = src->timer_info->timerfd_pre;
+    src->timer_info->timerfd_pre = timerfd_tmp;
+    timerfd_tmp = dst->timer_info->timerfd_now;
+    dst->timer_info->timerfd_now = src->timer_info->timerfd_now;
+    src->timer_info->timerfd_now = timerfd_tmp;
+    //FD in src must be changed to NUL, to avoid close in accident.
+    close_all_timerfd(src->timer_info->timerfd_pre, (SEQ_LEVEL_1+1));
+    close_all_timerfd(src->timer_info->timerfd_now, (SEQ_LEVEL_1+1));
 
     dst->flow_src->time_pre    = src->flow_src->time_pre;
     dst->flow_src->time_now    = src->flow_src->time_now;
@@ -381,6 +410,18 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
         tmp_peer->vip = htonl(id); //0.0.x.x in network byte order, used inside tunnel.
         //tmp_peer->rip = (global_tunif.addr & global_tunif.mask) | htonl(id); //in network byte order.
 
+        if(peer_table[id] != NULL &&
+            tmp_peer->peeraddr->sin_addr.s_addr == peer_table[id]->peeraddr->sin_addr.s_addr &&
+            tmp_peer->peeraddr->sin_port == peer_table[id]->peeraddr->sin_port &&
+            strncmp((char *)(tmp_peer->psk), (char *)(peer_table[id]->psk), 2*AES_TEXT_LEN) == 0)
+        {
+            //the peer does not change
+            peer_table[id]->discard = false;
+            delete_peer(tmp_peer);
+            tmp_peer = NULL;
+            continue;
+        }
+
         if(peer_table[id] != NULL)
         {
             printlog(INFO_LEVEL, "Warning: update the ID of %s\n", id_str);
@@ -390,7 +431,10 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
             tmp_peer = NULL;
         }
         else
+        {
+            printlog(INFO_LEVEL, "Info: add the ID of %s\n", id_str);
             peer_table[id] = tmp_peer;
+        }
     }
 
     free(line);

@@ -7,6 +7,10 @@ Todo list:
 6. IPv6
 
 
+2.4.2 2016-04-06
+- update peer profile: only update ip/port/psk 
+
+
 2.4.1 2016-03-31
 - timer array: bug fix
 
