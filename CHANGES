@@ -7,6 +7,10 @@ Todo list:
 6. IPv6
 
 
+2.4.3 2016-04-08
+- fix search bug in shell
+
+
 2.4.2 2016-04-06
 - update peer profile: only update ip/port/psk 
 

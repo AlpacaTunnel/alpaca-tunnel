@@ -25,7 +25,7 @@
 #endif
 
 #define PROCESS_NAME "AlpacaTunnel"
-#define VERSION "2.4.2"
+#define VERSION "2.4.3"
 #define GLOBAL_LOG_LEVEL INFO_LEVEL
 
 //custom specified path: first. (not available now.)
@@ -746,6 +746,7 @@ void* update_secret(void *arg)
                 printlog(ERROR_LEVEL, "error when update secret file!\n");
             else
                 printlog(INFO_LEVEL, "FILE: secret file reloaded!\n");
+            fclose(secrets_file);
 
             if(NULL == peer_table[global_self_id])
                 printlog(ERROR_LEVEL, "update_secret error: didn't find self profile in secert file!\n");
@@ -1631,6 +1632,19 @@ void* server_recv(void *arg)
                 global_send_buf[global_send_last].len = len;
                 memcpy(global_send_buf[global_send_last].dst_addr, peeraddr, sizeof(struct sockaddr_in));
                 memcpy(global_send_buf[global_send_last].buf_packet, buf_recv, len);
+                if(pkt_seq < SEQ_LEVEL_1)
+                {
+                    if(fs == 3 && pkt_seq == 0) //time_diff == 1, swap only once.
+                    {
+                        uint32_t * tmp_index = peer_table[dst_id]->index_array_pre;
+                        peer_table[dst_id]->index_array_pre = peer_table[dst_id]->index_array_now;
+                        peer_table[dst_id]->index_array_now = tmp_index;
+                    }
+                    if(fs == 1) //time_diff == -1
+                        peer_table[dst_id]->index_array_pre[pkt_seq] = global_send_last;
+                    else
+                        peer_table[dst_id]->index_array_now[pkt_seq] = global_send_last;
+                }
             }
     
             pthread_cond_signal(&global_send_cond);
@@ -1933,5 +1947,15 @@ int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t d
 
     if(fp->replay_cnt >= REPLAY_CNT_LIMIT)
         return -1;
+
+    if(time_diff == -1)
+        return 1;
+    if(time_diff == 0)
+        return 2;
+    if(time_diff == 1)
+        return 3;
+    if(time_diff > 1 || time_diff < -1)
+        return 4;
+
     return 0;
 }

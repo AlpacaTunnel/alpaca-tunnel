@@ -62,8 +62,8 @@ check_tun_name()
         for ifname in $tunlist; do 
             if [ $tunif == $ifname ]; then
                 return 1   #there is a same tun
-            else
-                return 2    #there is a tun with the same prefix
+            #else
+            #    return 2    #there is a tun with the same prefix
             fi
         done
     fi
@@ -442,10 +442,14 @@ search_instance()
     tunlist=`ip addr | grep $TUN_PREFIX | grep -v grep | grep -E "^[0-9]{1,9}" | awk '{print $2}' | awk -F: '{print $1}'`
 
     for tun in $tunlist; do
-        pid=`ps aux | grep $EXE_NAME | grep $tun | grep -v grep | awk '{print $2}'`
-        port=`netstat -anup | grep $EXE_NAME | grep $pid | awk '{print $4}' | awk -F: '{print $2}'`
-        ps -ef | grep -v grep | grep -v $BACKUP_PREFIX | grep -q $tun
-        [ $? == 0 ] && printf "%s\t\t%s\t\t%s\n" $tun `ip addr show dev $tun | grep inet | awk '{print $2}'` "port:$port"
+        pid=`ps aux | grep $EXE_NAME | grep -e "$tun$" | grep -v grep | awk '{print $2}'`
+        if [ "$pid" == "" ]; then
+            printf "%s  \t%s  \t%s\n" $tun `ip addr show dev $tun | grep inet | awk '{print $2}'` "no process running"
+        else
+            port=`netstat -anup | grep $EXE_NAME | grep $pid | awk '{print $4}' | awk -F: '{print $2}'`
+            ps -ef | grep -v grep | grep -v $BACKUP_PREFIX | grep -q -e "$tun$"
+            [ $? == 0 ] && printf "%s  \t%s  \t%s\n" $tun `ip addr show dev $tun | grep inet | awk '{print $2}'` "port:$port"
+        fi
     done
     
     return $tunnr
