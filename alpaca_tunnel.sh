@@ -435,11 +435,11 @@ search_instance()
         tunnr=`ps aux | grep $EXE_NAME | grep $TUN_PREFIX | grep -e "$tunif$" | grep -v grep | grep -v $BACKUP_PREFIX | wc -l`
     fi
 
-    [ $tunnr == 0 ] && echo "no instance running!" && return 0
+    tunlist=`ip addr | grep $TUN_PREFIX | grep -v grep | grep -E "^[0-9]{1,9}" | awk '{print $2}' | awk -F: '{print $1}'`
+
+    [ "$tunlist" == "" ] && echo "no instance running!" && return 0
 
     echo "Total running instance: $tunnr"
-
-    tunlist=`ip addr | grep $TUN_PREFIX | grep -v grep | grep -E "^[0-9]{1,9}" | awk '{print $2}' | awk -F: '{print $1}'`
 
     for tun in $tunlist; do
         pid=`ps aux | grep $EXE_NAME | grep -e "$tun$" | grep -v grep | awk '{print $2}'`
