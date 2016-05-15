@@ -32,7 +32,7 @@ struct peer_profile_t* add_peer()
         p->peeraddr = peeraddr;
     }
 
-    uint32_t * index_array_pre = (uint32_t *)malloc(SEQ_LEVEL_1*sizeof(uint32_t));
+    uint32_t * pkt_index_array_pre = (uint32_t *)malloc(SEQ_LEVEL_1*sizeof(uint32_t));
     if(peeraddr == NULL)
     {
         printlog(errno, "add_peer: malloc failed");
@@ -41,11 +41,11 @@ struct peer_profile_t* add_peer()
     }
     else
     {
-        bzero(index_array_pre, SEQ_LEVEL_1*sizeof(uint32_t));
-        p->index_array_pre = index_array_pre;
+        bzero(pkt_index_array_pre, SEQ_LEVEL_1*sizeof(uint32_t));
+        p->pkt_index_array_pre = pkt_index_array_pre;
     }
 
-    uint32_t * index_array_now = (uint32_t *)malloc(SEQ_LEVEL_1*sizeof(uint32_t));
+    uint32_t * pkt_index_array_now = (uint32_t *)malloc(SEQ_LEVEL_1*sizeof(uint32_t));
     if(peeraddr == NULL)
     {
         printlog(errno, "add_peer: malloc failed");
@@ -54,9 +54,20 @@ struct peer_profile_t* add_peer()
     }
     else
     {
-        bzero(index_array_now, SEQ_LEVEL_1*sizeof(uint32_t));
-        p->index_array_now = index_array_now;
+        bzero(pkt_index_array_now, SEQ_LEVEL_1*sizeof(uint32_t));
+        p->pkt_index_array_now = pkt_index_array_now;
     }
+
+    p->tcp_info = (struct tcp_info_t *)malloc(TCP_SESSION_CNT * sizeof(struct tcp_info_t));
+    if(p->tcp_info == NULL)
+    {
+        printlog(errno, "add_peer: malloc failed");
+        delete_peer(p);
+        return NULL;
+    }
+    else
+        bzero(p->tcp_info, TCP_SESSION_CNT * sizeof(struct tcp_info_t));
+    p->tcp_cnt = 0;
 
     p->timer_info = (struct timer_info_t *)malloc(sizeof(struct timer_info_t));
     if(p->timer_info == NULL)
@@ -68,27 +79,29 @@ struct peer_profile_t* add_peer()
     else
         bzero(p->timer_info, sizeof(struct timer_info_t));
 
-    p->timer_info->timer_size = SEQ_LEVEL_1;
+    p->timer_info->fd_max_cnt = TIMER_CNT;
+    
+    p->timer_info->ack_array_size = SEQ_LEVEL_1;
 
-    p->timer_info->timerfd_pre = (struct ack_info_t *)malloc((p->timer_info->timer_size + 1) * sizeof(struct ack_info_t));
-    if(p->timer_info->timerfd_pre == NULL)
+    p->timer_info->ack_array_pre = (struct ack_info_t *)malloc((p->timer_info->ack_array_size + 1) * sizeof(struct ack_info_t));
+    if(p->timer_info->ack_array_pre == NULL)
     {
         printlog(errno, "add_peer: malloc failed");
         delete_peer(p);
         return NULL;
     }
     else
-        bzero(p->timer_info->timerfd_pre, (p->timer_info->timer_size + 1) * sizeof(struct ack_info_t));
+        bzero(p->timer_info->ack_array_pre, (p->timer_info->ack_array_size + 1) * sizeof(struct ack_info_t));
 
-    p->timer_info->timerfd_now = (struct ack_info_t *)malloc((p->timer_info->timer_size + 1) * sizeof(struct ack_info_t));
-    if(p->timer_info->timerfd_now == NULL)
+    p->timer_info->ack_array_now = (struct ack_info_t *)malloc((p->timer_info->ack_array_size + 1) * sizeof(struct ack_info_t));
+    if(p->timer_info->ack_array_now == NULL)
     {
         printlog(errno, "add_peer: malloc failed");
         delete_peer(p);
         return NULL;
     }
     else
-        bzero(p->timer_info->timerfd_now, (p->timer_info->timer_size +1 ) * sizeof(struct ack_info_t));
+        bzero(p->timer_info->ack_array_now, (p->timer_info->ack_array_size +1 ) * sizeof(struct ack_info_t));
 
     p->flow_src = (struct flow_profile_t *)malloc(sizeof(struct flow_profile_t));
     if(p->flow_src == NULL)
@@ -148,24 +161,27 @@ int delete_peer(struct peer_profile_t* p)
     if(p->peeraddr != NULL)
         free(p->peeraddr);
 
-    if(p->index_array_pre != NULL)
-        free(p->index_array_pre);
+    if(p->pkt_index_array_pre != NULL)
+        free(p->pkt_index_array_pre);
 
-    if(p->index_array_now != NULL)
-        free(p->index_array_now);
+    if(p->pkt_index_array_now != NULL)
+        free(p->pkt_index_array_now);
+
+    if(p->tcp_info != NULL)
+        free(p->tcp_info);
 
     if(p->timer_info != NULL)
     {
-        if(p->timer_info->timerfd_pre != NULL)
+        if(p->timer_info->ack_array_pre != NULL)
         {
-            close_all_timerfd(p->timer_info->timerfd_pre, (SEQ_LEVEL_1+1));
-            free(p->timer_info->timerfd_pre);
+            close_all_timerfd(p->timer_info->ack_array_pre, (SEQ_LEVEL_1+1));
+            free(p->timer_info->ack_array_pre);
         }
     
-        if(p->timer_info->timerfd_now != NULL)
+        if(p->timer_info->ack_array_now != NULL)
         {
-            close_all_timerfd(p->timer_info->timerfd_now, (SEQ_LEVEL_1+1));
-            free(p->timer_info->timerfd_now);
+            close_all_timerfd(p->timer_info->ack_array_now, (SEQ_LEVEL_1+1));
+            free(p->timer_info->ack_array_now);
         }
         free(p->timer_info);
     }
@@ -197,15 +213,15 @@ int copy_peer(struct peer_profile_t* dst, struct peer_profile_t* src)
         return -1;
     }
 
-    if(dst->index_array_pre == NULL || src->index_array_pre == NULL)
+    if(dst->pkt_index_array_pre == NULL || src->pkt_index_array_pre == NULL)
     {
-        printlog(ERROR_LEVEL, "error copy_peer: dst->index_array_pre or src->index_array_pre is NULL\n");
+        printlog(ERROR_LEVEL, "error copy_peer: dst->pkt_index_array_pre or src->pkt_index_array_pre is NULL\n");
         return -1;
     }
 
-    if(dst->index_array_now == NULL || src->index_array_now == NULL)
+    if(dst->pkt_index_array_now == NULL || src->pkt_index_array_now == NULL)
     {
-        printlog(ERROR_LEVEL, "error copy_peer: dst->index_array_now or src->index_array_now is NULL\n");
+        printlog(ERROR_LEVEL, "error copy_peer: dst->pkt_index_array_now or src->pkt_index_array_now is NULL\n");
         return -1;
     }
 
@@ -215,15 +231,15 @@ int copy_peer(struct peer_profile_t* dst, struct peer_profile_t* src)
         return -1;
     }
 
-    if(dst->timer_info->timerfd_pre == NULL || src->timer_info->timerfd_pre == NULL)
+    if(dst->timer_info->ack_array_pre == NULL || src->timer_info->ack_array_pre == NULL)
     {
-        printlog(ERROR_LEVEL, "error copy_peer: dst->timerfd_pre or src->timerfd_pre is NULL\n");
+        printlog(ERROR_LEVEL, "error copy_peer: dst->ack_array_pre or src->ack_array_pre is NULL\n");
         return -1;
     }
 
-    if(dst->timer_info->timerfd_now == NULL || src->timer_info->timerfd_now == NULL)
+    if(dst->timer_info->ack_array_now == NULL || src->timer_info->ack_array_now == NULL)
     {
-        printlog(ERROR_LEVEL, "error copy_peer: dst->timerfd_now or src->timerfd_now is NULL\n");
+        printlog(ERROR_LEVEL, "error copy_peer: dst->ack_array_now or src->ack_array_now is NULL\n");
         return -1;
     }
 
@@ -250,26 +266,26 @@ int copy_peer(struct peer_profile_t* dst, struct peer_profile_t* src)
     memcpy(dst->peeraddr, src->peeraddr, sizeof(struct sockaddr_in));
     
     uint32_t * index_array_tmp;
-    index_array_tmp = dst->index_array_pre;
-    dst->index_array_pre = src->index_array_pre;
-    src->index_array_pre = index_array_tmp;
-    index_array_tmp = dst->index_array_now;
-    dst->index_array_now = src->index_array_now;
-    src->index_array_now = index_array_tmp;
+    index_array_tmp = dst->pkt_index_array_pre;
+    dst->pkt_index_array_pre = src->pkt_index_array_pre;
+    src->pkt_index_array_pre = index_array_tmp;
+    index_array_tmp = dst->pkt_index_array_now;
+    dst->pkt_index_array_now = src->pkt_index_array_now;
+    src->pkt_index_array_now = index_array_tmp;
 
     dst->timer_info->time_pre = src->timer_info->time_pre;
     dst->timer_info->time_now = src->timer_info->time_now;
 
     struct ack_info_t * timerfd_tmp;
-    timerfd_tmp = dst->timer_info->timerfd_pre;
-    dst->timer_info->timerfd_pre = src->timer_info->timerfd_pre;
-    src->timer_info->timerfd_pre = timerfd_tmp;
-    timerfd_tmp = dst->timer_info->timerfd_now;
-    dst->timer_info->timerfd_now = src->timer_info->timerfd_now;
-    src->timer_info->timerfd_now = timerfd_tmp;
+    timerfd_tmp = dst->timer_info->ack_array_pre;
+    dst->timer_info->ack_array_pre = src->timer_info->ack_array_pre;
+    src->timer_info->ack_array_pre = timerfd_tmp;
+    timerfd_tmp = dst->timer_info->ack_array_now;
+    dst->timer_info->ack_array_now = src->timer_info->ack_array_now;
+    src->timer_info->ack_array_now = timerfd_tmp;
     //FD in src must be changed to NUL, to avoid close in accident.
-    close_all_timerfd(src->timer_info->timerfd_pre, (SEQ_LEVEL_1+1));
-    close_all_timerfd(src->timer_info->timerfd_now, (SEQ_LEVEL_1+1));
+    close_all_timerfd(src->timer_info->ack_array_pre, (SEQ_LEVEL_1+1));
+    close_all_timerfd(src->timer_info->ack_array_now, (SEQ_LEVEL_1+1));
 
     dst->flow_src->time_pre    = src->flow_src->time_pre;
     dst->flow_src->time_now    = src->flow_src->time_now;

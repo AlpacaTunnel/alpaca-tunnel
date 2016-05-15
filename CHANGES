@@ -7,6 +7,11 @@ Todo list:
 6. IPv6
 
 
+2.4.4 2016-05-15
+- limit timer/ack_msg number
+- dup send some packets
+
+
 2.4.3 2016-04-08
 - fix search bug in shell
 

@@ -25,7 +25,7 @@
 #endif
 
 #define PROCESS_NAME "AlpacaTunnel"
-#define VERSION "2.4.3"
+#define VERSION "2.4.4"
 #define GLOBAL_LOG_LEVEL INFO_LEVEL
 
 //custom specified path: first. (not available now.)
@@ -68,9 +68,9 @@
 #define WRITE_BUF_SIZE 20000
 #define SEND_BUF_SIZE  20000
 #define EPOLL_MAXEVENTS 1024
-#define ACK_NUM 5
+#define ACK_NUM 3
 #define ACK_FIRST_TIME 30000000
-#define ACK_INTERVAL 40000000
+#define ACK_INTERVAL 60000000
 
 struct packet_profile_t
 {
@@ -83,6 +83,7 @@ struct packet_profile_t
     int timer_fd;
     int send_cnt;
     int len;
+    bool dup;
     struct sockaddr_in * dst_addr;
     byte * buf_packet;
 };
@@ -146,7 +147,7 @@ int usage(char *pname);
 void sig_handler(int signum);
 int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, struct peer_profile_t ** peer_table);
 int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, struct peer_profile_t ** peer_table);
-int add_timerfd_eopll(int epfd, uint8_t type, struct ack_info_t * info);
+int add_timerfd_epoll(int epfd, uint8_t type, struct ack_info_t * info);
 
 /* get next hop id form route_table or system route table
  * return value:
@@ -879,6 +880,47 @@ void* server_reset_stat(void *arg)
     return NULL;
 }
 
+bool is_pkt_dup(struct peer_profile_t * p, byte* ip_load)
+{
+    if(p == NULL || p->tcp_info == NULL)
+        return false;
+    //struct tcp_info_t * tcp_info = p->tcp_info;
+    struct iphdr ip_h;
+    struct tcphdr tcp_h;
+    struct udphdr udp_h;
+
+    memcpy(&ip_h, ip_load, sizeof(struct iphdr));
+    if(6 == ip_h.protocol)
+    {
+        //printf("tcp\n");
+        memcpy(&tcp_h, ip_load+sizeof(struct iphdr), sizeof(struct tcphdr));
+        //printf("src: %d, dst: %d, seq: %u, ack: %u\n", htons(tcp_h.source), htons(tcp_h.dest), htonl(tcp_h.seq), htonl(tcp_h.ack_seq));
+        if(htons(tcp_h.source) == 53 || htons(tcp_h.dest) == 53)
+        {
+            //printf("tcp dns\n");
+            return true;
+        }
+        if(tcp_h.syn == 1)
+        {
+            //todo: for the first about 10 or 20 tcp packets, should return true.
+            //uint32_t init_seq = htonl(tcp_h.seq);
+            //printf("syn init_seq: %u\n", init_seq);
+            return true;
+        }
+        
+    }
+    else if(17 == ip_h.protocol)
+    {
+        //printf("udp\n");
+        memcpy(&udp_h, ip_load+sizeof(struct iphdr), sizeof(struct udphdr));
+        //printf("src: %d, dst: %d\n", htons(udp_h.source), htons(udp_h.dest));
+        if(htons(udp_h.source) == 53 || htons(udp_h.dest) == 53)
+            return true;
+    }
+
+    return false;
+}
+
 void* server_read(void *arg)
 {
     pthread_cleanup_push(clean_lock_all, NULL);
@@ -905,8 +947,8 @@ void* server_read(void *arg)
             printlog(errno, "tunif %s read error", global_tunif.name);
             continue;
         }
-
-        memcpy(&ip_h, buf_load, IPV4_HEAD_LEN);
+        
+        memcpy(&ip_h, buf_load, sizeof(struct iphdr));
         next_id = get_next_hop_id(ip_h.daddr, ip_h.saddr);
 
         if(NULL == peer_table[next_id] || 1 == next_id || global_self_id == next_id)
@@ -995,9 +1037,9 @@ void* server_read(void *arg)
         {
             peer_table[dst_id]->local_seq = 0;
             global_local_time = now;
-            uint32_t * tmp_index = peer_table[dst_id]->index_array_pre;
-            peer_table[dst_id]->index_array_pre = peer_table[dst_id]->index_array_now;
-            peer_table[dst_id]->index_array_now = tmp_index;
+            uint32_t * tmp_index = peer_table[dst_id]->pkt_index_array_pre;
+            peer_table[dst_id]->pkt_index_array_pre = peer_table[dst_id]->pkt_index_array_now;
+            peer_table[dst_id]->pkt_index_array_now = tmp_index;
         }
         header_send.seq_frag_off.bit.seq = peer_table[dst_id]->local_seq;
         if(pthread_spin_unlock(&global_time_seq_spin) != 0)
@@ -1024,6 +1066,10 @@ void* server_read(void *arg)
         for(i=0; i<nr_aes_block; i++)
             encrypt(buf_send+HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN, buf_load+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
 
+        bool dup = is_pkt_dup(peer_table[bigger_id], buf_load);
+        //if(dup)
+        //    printf("should dup\n");
+
         //copy send packet to send thread
         if(pthread_mutex_lock(&global_send_mutex) != 0)
         {
@@ -1041,12 +1087,13 @@ void* server_read(void *arg)
             global_send_buf[global_send_last].src_id = global_self_id;
             global_send_buf[global_send_last].dst_id = dst_id;
             global_send_buf[global_send_last].send_fd = global_sockfd;
+            global_send_buf[global_send_last].dup = dup;
             global_send_buf[global_send_last].len = len;
             global_send_buf[global_send_last].timestamp = now;
             global_send_buf[global_send_last].seq = peer_table[dst_id]->local_seq;
             memcpy(global_send_buf[global_send_last].dst_addr, peeraddr, sizeof(struct sockaddr_in));
             memcpy(global_send_buf[global_send_last].buf_packet, buf_send, len);
-            peer_table[dst_id]->index_array_now[peer_table[dst_id]->local_seq] = global_send_last;
+            peer_table[dst_id]->pkt_index_array_now[peer_table[dst_id]->local_seq] = global_send_last;
         }
 
         pthread_cond_signal(&global_send_cond);
@@ -1091,6 +1138,7 @@ void* server_send(void *arg)
         global_send_first = (global_send_first + 1) % SEND_BUF_SIZE;
         sockfd = global_send_buf[global_send_first].send_fd;
         len = global_send_buf[global_send_first].len;
+        bool dup = global_send_buf[global_send_first].dup;
         dst_id = global_send_buf[global_send_first].dst_id;
         memcpy(peeraddr, global_send_buf[global_send_first].dst_addr, sizeof(struct sockaddr_in));
         memcpy(buf_send, global_send_buf[global_send_first].buf_packet, len);
@@ -1101,6 +1149,13 @@ void* server_send(void *arg)
         int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
         if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
             printlog(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
+
+        if(dup)  //todo: it's better to add a timer here
+        {
+            len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
+            if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
+                printlog(errno, "tunif %s sendto dst_id %d.%d socket error when dup", global_tunif.name, dst_id/256, dst_id%256);
+        }
 
         continue;
     }
@@ -1182,13 +1237,13 @@ void* watch_timer_recv(void *arg)
         int i;
         for(i = 0; i < n; i++)
         {
-            struct ack_info_t * tc = (struct ack_info_t *)(evs[i].data.ptr);
-            uint16_t ack_id = tc->src_id;
-            if(read(tc->fd, &read_buf, sizeof(uint64_t)) < 0)
+            struct ack_info_t * ai = (struct ack_info_t *)(evs[i].data.ptr);
+            uint16_t ack_id = ai->src_id;
+            if(read(ai->fd, &read_buf, sizeof(uint64_t)) < 0)
                 continue;
 
             //to do:
-            //for HEAD_TYPE_MSG packets, don't assign a seq number. this may be a weakness.
+            //for HEAD_TYPE_MSG packets, haven't assigned a seq number. this may be a weakness.
             //or use msg_seq/data_seq instead of local_seq.
 
             uint32_t now = time(NULL);
@@ -1209,11 +1264,11 @@ void* watch_timer_recv(void *arg)
             header_send.dst_id = htons(ack_id);
             header_send.src_id = htons(global_self_id);
             
-            ack_msg.src_id = htons(tc->src_id);
-            ack_msg.dst_id = htons(tc->dst_id);
-            ack_msg.ack_type = htonl(tc->type);
-            ack_msg.timestamp = htonl(tc->timestamp);
-            ack_msg.seq = tc->seq;
+            ack_msg.src_id = htons(ai->src_id);
+            ack_msg.dst_id = htons(ai->dst_id);
+            ack_msg.ack_type = htonl(ai->type);
+            ack_msg.timestamp = htonl(ai->timestamp);
+            ack_msg.seq = ai->seq;
             ack_msg.seq = htonl(ack_msg.seq);
             memcpy(buf_load, &ack_msg, len_load);
 
@@ -1234,17 +1289,18 @@ void* watch_timer_recv(void *arg)
                 encrypt(buf_send+HEADER_LEN+ICV_LEN+j*AES_TEXT_LEN, buf_load+j*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
 
             int len = HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN;
-            int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
+            //int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
+            int len_pad = 17;  //for debug only
             if(sendto(global_sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peer_table[ack_id]->peeraddr, sizeof(struct sockaddr)) < 0 )
                 printlog(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, ack_id/256, ack_id%256);
 
-            if(tc->cnt >= (ACK_NUM-1))
+            if(ai->cnt >= (ACK_NUM-1))
             {
-                close(tc->fd);
-                tc->fd = 0;
+                close(ai->fd);
+                ai->fd = 0;
             }
             else
-                tc->cnt++;
+                ai->cnt++;
         }
         bzero(evs, n*sizeof(struct epoll_event));
     }
@@ -1365,9 +1421,6 @@ void* server_recv(void *arg)
             ack_msg.ack_type = htonl(ack_msg.ack_type);
             ack_msg.timestamp = htonl(ack_msg.timestamp);
             ack_msg.seq = htonl(ack_msg.seq);
-            //printf("type: %d\n", ack_msg.ack_type);
-            //printf("pkt from %d.%d to %d.%d lost\n", ack_msg.src_id/256, ack_msg.src_id%256, ack_msg.dst_id/256, ack_msg.dst_id%256);
-            //printf("pkt time: %d, seq: %d\n", ack_msg.timestamp, ack_msg.seq_frag_off.bit.seq);
 
             if(ack_msg.timestamp == global_local_time)
             {
@@ -1400,11 +1453,11 @@ void* server_recv(void *arg)
             int seq;
             for(seq = min_seq; seq <= max_seq; seq++)
             {
-                uint32_t * index_array_pre = peer_table[ack_msg.dst_id]->index_array_pre;
-                uint32_t * index_array_now = peer_table[ack_msg.dst_id]->index_array_now;
+                uint32_t * pkt_index_array_pre = peer_table[ack_msg.dst_id]->pkt_index_array_pre;
+                uint32_t * pkt_index_array_now = peer_table[ack_msg.dst_id]->pkt_index_array_now;
                 
-                uint32_t buf_index_pre = index_array_pre[seq];
-                uint32_t buf_index_now = index_array_now[seq];
+                uint32_t buf_index_pre = pkt_index_array_pre[seq];
+                uint32_t buf_index_now = pkt_index_array_now[seq];
                 if(buf_index_pre > SEND_BUF_SIZE || buf_index_now > SEND_BUF_SIZE)
                     continue;
     
@@ -1636,14 +1689,14 @@ void* server_recv(void *arg)
                 {
                     if(fs == 3 && pkt_seq == 0) //time_diff == 1, swap only once.
                     {
-                        uint32_t * tmp_index = peer_table[dst_id]->index_array_pre;
-                        peer_table[dst_id]->index_array_pre = peer_table[dst_id]->index_array_now;
-                        peer_table[dst_id]->index_array_now = tmp_index;
+                        uint32_t * tmp_index = peer_table[dst_id]->pkt_index_array_pre;
+                        peer_table[dst_id]->pkt_index_array_pre = peer_table[dst_id]->pkt_index_array_now;
+                        peer_table[dst_id]->pkt_index_array_now = tmp_index;
                     }
                     if(fs == 1) //time_diff == -1
-                        peer_table[dst_id]->index_array_pre[pkt_seq] = global_send_last;
+                        peer_table[dst_id]->pkt_index_array_pre[pkt_seq] = global_send_last;
                     else
-                        peer_table[dst_id]->index_array_now[pkt_seq] = global_send_last;
+                        peer_table[dst_id]->pkt_index_array_now[pkt_seq] = global_send_last;
                 }
             }
     
@@ -1670,9 +1723,9 @@ int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t
     struct flow_profile_t * fp = peer_table[src_id]->flow_src;
     struct bit_array_t * ba = NULL;
 
-    if(pkt_seq >= ti->timer_size)
+    if(pkt_seq >= ti->ack_array_size)
     {
-        printlog(INFO_LEVEL, "pkt_seq beyond timer_size, ignore this packet from %d.%d to %d.%d\n", 
+        printlog(INFO_LEVEL, "pkt_seq beyond ack_array_size, ignore this packet from %d.%d to %d.%d\n", 
             src_id/256, src_id%256, dst_id/256, dst_id%256);
         return 0;
     }
@@ -1682,98 +1735,101 @@ int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t
     {
         if(time_diff == 1)
         {
-            close_all_timerfd(ti->timerfd_pre, SEQ_LEVEL_1);  //this function slows down the tunnel from 100% to about 98% bps. don't care it now.
-            struct ack_info_t * tmp_info = ti->timerfd_pre;
-            ti->timerfd_pre = ti->timerfd_now;
-            ti->timerfd_now = tmp_info;
+            close_all_timerfd(ti->ack_array_pre, SEQ_LEVEL_1);  //this function slows down the tunnel from 100% to about 98% bps. don't care it now.
+            struct ack_info_t * tmp_info = ti->ack_array_pre;
+            ti->ack_array_pre = ti->ack_array_now;
+            ti->ack_array_now = tmp_info;
             ti->max_ack_pre = ti->max_ack_now;
             ti->max_ack_now = pkt_seq;
         }
         else
         {
-            close_all_timerfd(ti->timerfd_pre, SEQ_LEVEL_1);
-            close_all_timerfd(ti->timerfd_now, SEQ_LEVEL_1);
+            close_all_timerfd(ti->ack_array_pre, SEQ_LEVEL_1);
+            close_all_timerfd(ti->ack_array_now, SEQ_LEVEL_1);
             ti->max_ack_pre = 0;
-            ti->max_ack_now = pkt_seq;
+            ti->max_ack_now = pkt_seq;  //don't set max_ack_now to timer_nr, otherwise fd_max_cnt doesn't make sense.
         }
 
         ti->time_now = pkt_time;
         ti->time_pre = pkt_time - 1;
         
-        struct ack_info_t * info_array = ti->timerfd_now;
+        struct ack_info_t * ack_array = ti->ack_array_now;
         
+        int timer_nr = (pkt_seq < ti->fd_max_cnt) ? pkt_seq : ti->fd_max_cnt;  //only create timer for the first fd_max_cnt pkt, to avoid too many ack msg
         int i;
-        for(i = 0; i < pkt_seq; i++)
+        for(i = 0; i < timer_nr; i++)
         {
-            info_array[i].cnt = 0;
-            info_array[i].src_id = src_id;
-            info_array[i].dst_id = dst_id;
-            info_array[i].timestamp = pkt_time;
-            info_array[i].seq = i;
-            add_timerfd_eopll(global_epoll_fd_recv, TIMER_TYPE_MID, &(info_array[i]));
+            ack_array[i].cnt = 0;
+            ack_array[i].src_id = src_id;
+            ack_array[i].dst_id = dst_id;
+            ack_array[i].timestamp = pkt_time;
+            ack_array[i].seq = i;
+            add_timerfd_epoll(global_epoll_fd_recv, TIMER_TYPE_MID, &(ack_array[i]));
         }
 
-        info_array[pkt_seq].cnt = 0;
-        info_array[pkt_seq].src_id = src_id;
-        info_array[pkt_seq].dst_id = dst_id;
-        info_array[pkt_seq].timestamp = pkt_time;
-        info_array[pkt_seq].seq = pkt_seq;
-        add_timerfd_eopll(global_epoll_fd_recv, TIMER_TYPE_LAST, &(info_array[pkt_seq]));
+        ack_array[pkt_seq].cnt = 0;
+        ack_array[pkt_seq].src_id = src_id;
+        ack_array[pkt_seq].dst_id = dst_id;
+        ack_array[pkt_seq].timestamp = pkt_time;
+        ack_array[pkt_seq].seq = pkt_seq;
+        add_timerfd_epoll(global_epoll_fd_recv, TIMER_TYPE_LAST, &(ack_array[pkt_seq]));
     }
     else if(time_diff == 0 || time_diff == -1)
     {
-        uint32_t max_ack = 0;
-        struct ack_info_t * info_array = NULL;
+        uint32_t max_ack_seq = 0;
+        struct ack_info_t * ack_array = NULL;
         if(time_diff == 0)
         {
-            info_array = ti->timerfd_now;
-            max_ack = ti->max_ack_now;
-            if(pkt_seq > max_ack)
+            ack_array = ti->ack_array_now;
+            max_ack_seq = ti->max_ack_now;
+            if(pkt_seq > max_ack_seq)
                 ti->max_ack_now = pkt_seq;
             ba = fp->ba_now;
         }
         else if(time_diff == -1)
         {
-            info_array = ti->timerfd_pre;
-            max_ack = ti->max_ack_pre;
-            if(pkt_seq > max_ack)
+            ack_array = ti->ack_array_pre;
+            max_ack_seq = ti->max_ack_pre;
+            if(pkt_seq > max_ack_seq)
                 ti->max_ack_pre = pkt_seq;
             ba = fp->ba_pre;
         }
 
-        //if(pkt_seq == max_ack), do nothing.
-        if(pkt_seq < max_ack && info_array[pkt_seq].fd != 0)
+        //if(pkt_seq == max_ack_seq), do nothing.
+        if(pkt_seq < max_ack_seq && ack_array[pkt_seq].fd != 0)
         {
             //printf("close: mid %d\n", pkt_seq);
-            close(info_array[pkt_seq].fd);
-            info_array[pkt_seq].fd = 0;
+            close(ack_array[pkt_seq].fd);
+            ack_array[pkt_seq].fd = 0;
         }
-        else if(pkt_seq > max_ack)
+        else if(pkt_seq > max_ack_seq)
         {
-            //printf("close: max %d\n", max_ack);
-            close(info_array[max_ack].fd);
-            info_array[max_ack].fd = 0;
+            //printf("close: max %d\n", max_ack_seq);
+            close(ack_array[max_ack_seq].fd);
+            ack_array[max_ack_seq].fd = 0;
 
-            info_array[pkt_seq].cnt = 0;
-            info_array[pkt_seq].src_id = src_id;
-            info_array[pkt_seq].dst_id = dst_id;
-            info_array[pkt_seq].timestamp = pkt_time;
-            info_array[pkt_seq].seq = pkt_seq;
-            add_timerfd_eopll(global_epoll_fd_recv, TIMER_TYPE_LAST, &(info_array[pkt_seq]));
+            ack_array[pkt_seq].cnt = 0;
+            ack_array[pkt_seq].src_id = src_id;
+            ack_array[pkt_seq].dst_id = dst_id;
+            ack_array[pkt_seq].timestamp = pkt_time;
+            ack_array[pkt_seq].seq = pkt_seq;
+            add_timerfd_epoll(global_epoll_fd_recv, TIMER_TYPE_LAST, &(ack_array[pkt_seq]));
 
+            int lost_nr = pkt_seq - max_ack_seq;
+            int timer_nr = (lost_nr < ti->fd_max_cnt) ? lost_nr : ti->fd_max_cnt;  //only create timer for the first fd_max_cnt pkt, to avoid too many ack msg
             int i;
-            for(i = max_ack+1; i < pkt_seq; i++)
+            for(i = max_ack_seq+1; i < max_ack_seq+timer_nr; i++)
             {
                 //if HEAD_TYPE_MSG/HEAD_TYPE_DATA share the same seq number, it will be diffict to handle here.
                 //if the msg lost, there will be a timerfd too, that's wrong.
                 if(bit_array_get(ba, i) == 0)
                 {
-                    info_array[i].cnt = 0;
-                    info_array[i].src_id = src_id;
-                    info_array[i].dst_id = dst_id;
-                    info_array[i].timestamp = pkt_time;
-                    info_array[i].seq = i;
-                    add_timerfd_eopll(global_epoll_fd_recv, TIMER_TYPE_MID, &(info_array[i]));
+                    ack_array[i].cnt = 0;
+                    ack_array[i].src_id = src_id;
+                    ack_array[i].dst_id = dst_id;
+                    ack_array[i].timestamp = pkt_time;
+                    ack_array[i].seq = i;
+                    add_timerfd_epoll(global_epoll_fd_recv, TIMER_TYPE_MID, &(ack_array[i]));
                 }
             }
         }
@@ -1783,7 +1839,7 @@ int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t
 }
 
 //this function slows down the tunnel from 100% to 70% bps. should rewrite it latter.
-int add_timerfd_eopll(int epfd, uint8_t type, struct ack_info_t * info)
+int add_timerfd_epoll(int epfd, uint8_t type, struct ack_info_t * info)
 {
     struct itimerspec new_value;
     new_value.it_value.tv_sec = 0;

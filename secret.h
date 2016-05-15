@@ -11,11 +11,11 @@
     typedef enum { false, true } bool;
 #endif
 
-//enough for 100Mbps TCP
-#define SEQ_LEVEL_1 16000
+#define SEQ_LEVEL_1 16000   //enough for 100Mbps TCP
+#define TCP_SESSION_CNT 100
+#define TIMER_CNT 20  //for every peer, only open CNT FD
 
-//for flows that dst_id==0 or src_id==0, flow profiles are stored in peer_profile.
-//for flows that dst_id!=0 and src_id!=0, flow profiles are stored in a common hash.
+
 struct flow_profile_t
 {
     uint32_t time_pre;
@@ -31,10 +31,11 @@ struct flow_profile_t
     struct bit_array_t * ba_now;
 };
 
+//ack info for every pkt
 struct ack_info_t
 {
-    uint8_t type;
-    uint8_t cnt;
+    uint8_t type;  //mid lost or last recived
+    uint8_t cnt;  //ack msg send cnt
     uint16_t src_id;
     uint16_t dst_id;
     uint32_t timestamp;
@@ -44,14 +45,14 @@ struct ack_info_t
 
 struct timer_info_t
 {
-    int fd_cnt;
-    uint32_t timer_size;
+    int fd_max_cnt; //max number of allowed timefd to create, avoid too many timerfd open, and also avoid sending too many msg when network is congested.  
     uint32_t time_pre;
     uint32_t time_now;
     uint32_t max_ack_pre;
     uint32_t max_ack_now;
-    struct ack_info_t * timerfd_pre;  //array that stores all timerfd of pre second
-    struct ack_info_t * timerfd_now;  //array that stores all timerfd of the latest second
+    uint32_t ack_array_size;   //size of the following array, should eq to max pkt seq(SEQ_LEVEL_1)
+    struct ack_info_t * ack_array_pre;  //array that stores all timerfd of pre second, for each pkt, there is an ack_info_t
+    struct ack_info_t * ack_array_now;  //array that stores all timerfd of the latest second
 };
 
 //data struct of peers in memory.
@@ -59,17 +60,19 @@ struct peer_profile_t
 {
     uint16_t id;
     bool valid;
-    bool discard;
+    bool discard;  //used when update profiles, identify whether a peer is deleted or not
     bool restricted;
     bool dup;   //when set, packet will be double sent.
     uint16_t srtt;
     uint64_t total_pkt_cnt;
     uint32_t local_seq;
-    uint32_t * index_array_pre;  //sore the indexes of sent packets in global buf
-    uint32_t * index_array_now;
+    uint32_t * pkt_index_array_pre;  //store the indexes of sent packets in global buf
+    uint32_t * pkt_index_array_now;
     struct timer_info_t * timer_info;
-    struct flow_profile_t * flow_src;  //for flow that dst==0, src->0
-    uint64_t involve_cnt; //if dst_id let src_id replayed or jumped, dst_id cnt++; avoid bigger_id attach others
+    struct tcp_info_t * tcp_info;
+    int tcp_cnt;
+    struct flow_profile_t * flow_src;
+    uint64_t involve_cnt; //if dst_id let src_id replayed or jumped, dst_id cnt++; avoid bigger_id attack others
     byte psk[2*AES_TEXT_LEN];
     struct sockaddr_in *peeraddr;   //peer IP
     int port;   //peer port

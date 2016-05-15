@@ -7,9 +7,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <arpa/inet.h>
-#include <linux/ip.h>
-#include <linux/tcp.h>
-#include <linux/udp.h>
 
 
 static uint16_t global_ipv4_mask_fragoff;

@@ -79,8 +79,8 @@ struct tunnel_header_t
 
 
 /*
-  ack_type: 0, middle packet lost
-  ack_type: 1, last packet recived
+  ack_type: 0, middle packet lost, TIMER_TYPE_MID
+  ack_type: 1, last packet recived, TIMER_TYPE_LAST
 */
 struct ack_msg_t
 {

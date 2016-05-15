@@ -270,7 +270,7 @@ serverup()
         gwmtu=`ip link show dev $default_gw_dev | grep -i mtu | sed -e 's/.*mtu \([^ ]*\).*/\1/'`
         tunmtu=$((gwmtu-HEADER_LEN))
         [ $tunmtu -lt $TUN_MTU ] && echo "warning: tunnel MTU/TCPMSS may too big!"
-        iptables -t nat -A POSTROUTING -s $TUN_IP/$TUN_MASK -o $default_gw_dev -j MASQUERADE
+        iptables -t nat -A POSTROUTING -s $TUN_IP/$TUN_MASK -j MASQUERADE
     fi
     sysctl -w net.ipv4.ip_forward=1 > /dev/null
     iptables -A FORWARD -p tcp --syn -s $TUN_IP/$TUN_MASK -j TCPMSS --set-mss $TCPMSS
@@ -292,9 +292,7 @@ serverdown()
     [ $? != 0 ] && return 1
 
     iptables -D FORWARD -p tcp --syn -s $TUN_IP/$TUN_MASK -j TCPMSS --set-mss $TCPMSS
-
-    default_gw_dev=`cat $BACKUP_GW_DEV`
-    [ "$default_gw_dev" != "" ] && iptables -t nat -D POSTROUTING -s $TUN_IP/$TUN_MASK -o $default_gw_dev -j MASQUERADE
+    iptables -t nat -D POSTROUTING -s $TUN_IP/$TUN_MASK -j MASQUERADE
 
     del_tunif $TUNIF
     [ $? != 0 ] && return 1
