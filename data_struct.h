@@ -1,6 +1,8 @@
 #ifndef DATA_STRUCT_H_
 #define DATA_STRUCT_H_
 
+/* handle bit array, search, sort, list, etc... */
+
 #include <stdint.h>
 
 #define BIT_ARRAY_MAX_SIZE (1<<24)
@@ -12,6 +14,12 @@ struct bit_array_t
 {
     bit_array_unit *array;
     uint32_t size;
+};
+
+struct string_node
+{
+    char * node;
+    struct string_node * next;
 };
 
 
@@ -35,5 +43,10 @@ int bit_array_get(struct bit_array_t *ba, uint32_t index);
 
 int binary_search(const uint32_t arr[], int start, int end, int key);
 void bubble_sort(uint32_t arr[], int len);
+
+struct string_node * append_string_node(struct string_node ** first, char * node);
+char * shift_string_node(struct string_node ** first);
+int free_string_node(struct string_node ** first);
+
 
 #endif

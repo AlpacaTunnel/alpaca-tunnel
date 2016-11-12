@@ -1,8 +1,8 @@
-AlpacaTunnel
+alpaca-tunnel
 ============
 
 
-AlpacaTunnel is an VPN designed for The Grass Mud Horses, also known as
+alpaca-tunnel is an VPN designed for The Grass Mud Horses, also known as
 Caonimas. Any Caonima is welcomed to use this software. Anyone who wants
 to use this tool but agrees with the GFW, go fuck yourself.
 
@@ -10,11 +10,11 @@ to use this tool but agrees with the GFW, go fuck yourself.
 Install
 -------
 
-Currently only tested on Ubuntu and CentOS.
+Currently only tested on Ubuntu 16.04 and CentOS 7. Depend on systemd.
 Download the codes and build.
 
     sudo apt-get update
-    sudo apt-get install build-essential make bc -y
+    sudo apt-get install build-essential make -y
     make && sudo make install
 
 
@@ -22,10 +22,10 @@ Configuration
 -------------
 
 - Conf files are stored in `/usr/local/etc` by default.
-- Edit Mode/ID in `alpaca_tunnel.conf`.
-- Edit server addresses and passwords in `alpaca_secrets`.
+- Edit Mode/ID in `alpaca-tunnel.json`.
+- Edit server addresses and passwords in `alpaca-secrets`.
 
-AlpacaTunnel supports multiple clients with one server instance. Each server
+alpaca-tunnel supports multiple clients with one server instance. Each server
 or client has an unique ID, such as 1.1 or 16.4. The format of the ID is just
 like the format of one half of an IP address. Note that you must allocate
 smaller IDs for servers, bigger IDs for clients.
@@ -36,19 +36,19 @@ Servers and clients must have the same GROUP name.
 Usage
 -----
 
-Search running instances:
+Show status:
 
-    alpaca_tunnel search
+    systemctl status alpaca-tunnel.service
 
 Start:
 
-    sudo alpaca_tunnel up
-    sudo /usr/local/etc/alpaca_tunnel.d/chnroute.sh add
+    sudo systemctl start alpaca-tunnel.service
+    sudo /usr/local/etc/alpaca-tunnel.d/chnroute.sh add
 
 Stop:
 
-    sudo alpaca_tunnel down
-    sudo /usr/local/etc/alpaca_tunnel.d/chnroute.sh del
+    sudo systemctl stop alpaca-tunnel.service
+    sudo /usr/local/etc/alpaca-tunnel.d/chnroute.sh del
 
 
 Wiki
@@ -60,7 +60,7 @@ You can find all the documentation in the wiki.md.
 License
 -------
 
-Copyright (C) 2015 AlpacaTunnel
+Copyright (C) 2016 alpaca-tunnel
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -74,6 +74,10 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+The json parser was distributed under MIT license, please
+refer to <https://github.com/zserge/jsmn>.
 
 
 Bugs and Issues

@@ -52,20 +52,15 @@ DESIGN
 
 file path:
 
-1) sh/exe file
-1st: none
-2nd: $PATH -- /usr/bin, /usr/local/bin
-3rd: user specified (bash $path/xxx.sh)
+Config file path choose order:
+1) if user specify the path with -C, this path will be used.
+2) if exe is located at `/usr/bin/`, config will be `/etc/alpaca-tunnel.json`.
+3) if exe is located at `/usr/local/bin/`, config will be `/usr/local/etc/alpaca-tunnel.json`.
+4) config will be at the same path with exe file.
 
-2) user_data(alpacas), chnroute.sh and route_data
-1st: user specified
-2nd: /etc/alpaca_tunnel.d/* or /usr/local/etc/alpaca_tunnel.d/* (accordingly, if sh/exe is located at $PATH)
-3rd: alpaca_tunnel.d/*, the same path with the sh/exe
-
-3) conf file
-1st: user specified
-2nd: /etc/alpaca_tunnel.conf or /usr/local/etc/alpaca_tunnel.conf (accordingly, if sh/exe is located at $PATH)
-3rd: alpaca_tunnel.conf, the same path with the sh/exe
+Secret file path choose order:
+1) if user specify the path in json, this path will be used. if this path is a relative path, it's relative to the config json.
+2) Otherwise, the secret file MUST be located at the relative path `alpaca-tunnel.d/alpaca-secrets` to the config json, NOT with exe!
 
 
 send signal to set valid/invalid of users

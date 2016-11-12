@@ -1,6 +1,3 @@
-#include "route.h"
-#include "log.h"
-
 #include <strings.h>
 #include <string.h>
 #include <stdio.h>
@@ -10,7 +7,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <ifaddrs.h>
-//#include <sys/time.h>
+
+#include "route.h"
+#include "log.h"
+
 
 #define NLMSG_TAIL(nmsg) ((struct rtattr *) (((void *) (nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))
 
@@ -27,7 +27,7 @@ int init_route_spin()
     {
         if(pthread_spin_init(&route_spin, PTHREAD_PROCESS_PRIVATE) != 0)
         {
-            printlog(errno, "pthread_spin_init");
+            ERROR(errno, "pthread_spin_init");
             return -1;
         }
         route_spin_inited = 1;
@@ -41,7 +41,7 @@ int destroy_route_spin()
     {
         if(pthread_spin_destroy(&route_spin) != 0)
         {
-            printlog(errno, "pthread_spin_destroy");
+            ERROR(errno, "pthread_spin_destroy");
             return -1;
         }
         route_spin_inited = 0;
@@ -53,7 +53,7 @@ int lock_route_spin()
 {
     if(pthread_spin_lock(&route_spin) != 0)
     {
-        printlog(errno, "pthread_spin_lock");
+        ERROR(errno, "pthread_spin_lock");
         return -1;
     }
     return 0;
@@ -63,7 +63,7 @@ int unlock_route_spin()
 {
     if(pthread_spin_unlock(&route_spin) != 0)
     {
-        printlog(errno, "pthread_spin_unlock");
+        ERROR(errno, "pthread_spin_unlock");
         return -1;
     }
     return 0;
@@ -73,7 +73,7 @@ int clear_route()
 {
     if(pthread_spin_lock(&route_spin) != 0)
     {
-        printlog(errno, "pthread_spin_lock");
+        ERROR(errno, "pthread_spin_lock");
         return -1;
     }
 
@@ -88,7 +88,7 @@ int clear_route()
     
     if(pthread_spin_unlock(&route_spin) != 0)
     {
-        printlog(errno, "pthread_spin_unlock");
+        ERROR(errno, "pthread_spin_unlock");
         return -1;
     }
 
@@ -99,7 +99,7 @@ int add_route(uint16_t next_hop_id, uint32_t ip_dst, uint32_t ip_src)
 {
     if(pthread_spin_lock(&route_spin) != 0)
     {
-        printlog(errno, "pthread_spin_lock");
+        ERROR(errno, "pthread_spin_lock");
         return -1;
     }
 
@@ -110,7 +110,7 @@ int add_route(uint16_t next_hop_id, uint32_t ip_dst, uint32_t ip_src)
 
     if(pthread_spin_unlock(&route_spin) != 0)
     {
-        printlog(errno, "pthread_spin_unlock");
+        ERROR(errno, "pthread_spin_unlock");
         return -1;
     }
 
@@ -185,7 +185,7 @@ int clear_if_info(struct if_info_t *info)
     
     if(pthread_spin_lock(&route_spin) != 0)
     {
-        printlog(errno, "pthread_spin_lock");
+        ERROR(errno, "pthread_spin_lock");
         return -1;
     }
 
@@ -199,7 +199,7 @@ int clear_if_info(struct if_info_t *info)
 
     if(pthread_spin_unlock(&route_spin) != 0)
     {
-        printlog(errno, "pthread_spin_unlock");
+        ERROR(errno, "pthread_spin_unlock");
         return -1;
     }
 
@@ -210,14 +210,14 @@ int collect_if_info(struct if_info_t **first)
 {
     if(pthread_spin_lock(&route_spin) != 0)
     {
-        printlog(errno, "pthread_spin_lock");
+        ERROR(errno, "pthread_spin_lock");
         return -1;
     }
 
     struct ifaddrs *ifaddr, *ifa;
     if(getifaddrs(&ifaddr) == -1) 
     {
-        printlog(errno, "collect_if_info: getifaddrs");
+        ERROR(errno, "collect_if_info: getifaddrs");
         return -1;
     }
     int index = 0;
@@ -229,7 +229,7 @@ int collect_if_info(struct if_info_t **first)
         index = if_nametoindex(ifa->ifa_name);
         if(0 == index)
         {
-            printlog(errno, "collect_if_info: if_nametoindex");
+            ERROR(errno, "collect_if_info: if_nametoindex");
             continue;
         }
         if(NULL == ifa->ifa_addr || AF_INET != ifa->ifa_addr->sa_family)
@@ -265,7 +265,7 @@ int collect_if_info(struct if_info_t **first)
 
     if(pthread_spin_unlock(&route_spin) != 0)
     {
-        printlog(errno, "pthread_spin_unlock");
+        ERROR(errno, "pthread_spin_unlock");
         return -1;
     }
 

@@ -1,15 +1,11 @@
 #ifndef SECRET_H_
 #define SECRET_H_
 
-#include "aes.h"
-#include "data_struct.h"
-
 #include <stdio.h>
 
-#ifndef BOOL_T_
-#define BOOL_T_
-    typedef enum { false, true } bool;
-#endif
+#include "aes.h"
+#include "bool.h"
+#include "data_struct.h"
 
 #define SEQ_LEVEL_1 16000   //enough for 100Mbps TCP
 #define TCP_SESSION_CNT 100
@@ -61,7 +57,7 @@ struct peer_profile_t
     uint16_t id;
     bool valid;
     bool discard;  //used when update profiles, identify whether a peer is deleted or not
-    bool restricted;
+    bool restricted;  // if true, only recive data of this peer from the ip in secret file
     bool dup;   //when set, packet will be double sent.
     uint16_t srtt;
     uint64_t total_pkt_cnt;

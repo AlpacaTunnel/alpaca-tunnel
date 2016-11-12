@@ -1,19 +1,19 @@
-#include "secret.h"
-#include "log.h"
-#include "ip.h"
-
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 
+#include "secret.h"
+#include "log.h"
+#include "ip.h"
+
 struct peer_profile_t* add_peer()
 {
     struct peer_profile_t * p = (struct peer_profile_t *)malloc(sizeof(struct peer_profile_t));
     if(p == NULL)
     {
-        printlog(errno, "add_peer: malloc failed");
+        ERROR(errno, "add_peer: malloc failed");
         return NULL;
     }
     else
@@ -22,7 +22,7 @@ struct peer_profile_t* add_peer()
     struct sockaddr_in * peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
     if(peeraddr == NULL)
     {
-        printlog(errno, "add_peer: malloc failed");
+        ERROR(errno, "add_peer: malloc failed");
         delete_peer(p);
         return NULL;
     }
@@ -35,7 +35,7 @@ struct peer_profile_t* add_peer()
     uint32_t * pkt_index_array_pre = (uint32_t *)malloc(SEQ_LEVEL_1*sizeof(uint32_t));
     if(peeraddr == NULL)
     {
-        printlog(errno, "add_peer: malloc failed");
+        ERROR(errno, "add_peer: malloc failed");
         delete_peer(p);
         return NULL;
     }
@@ -48,7 +48,7 @@ struct peer_profile_t* add_peer()
     uint32_t * pkt_index_array_now = (uint32_t *)malloc(SEQ_LEVEL_1*sizeof(uint32_t));
     if(peeraddr == NULL)
     {
-        printlog(errno, "add_peer: malloc failed");
+        ERROR(errno, "add_peer: malloc failed");
         delete_peer(p);
         return NULL;
     }
@@ -61,7 +61,7 @@ struct peer_profile_t* add_peer()
     p->tcp_info = (struct tcp_info_t *)malloc(TCP_SESSION_CNT * sizeof(struct tcp_info_t));
     if(p->tcp_info == NULL)
     {
-        printlog(errno, "add_peer: malloc failed");
+        ERROR(errno, "add_peer: malloc failed");
         delete_peer(p);
         return NULL;
     }
@@ -72,7 +72,7 @@ struct peer_profile_t* add_peer()
     p->timer_info = (struct timer_info_t *)malloc(sizeof(struct timer_info_t));
     if(p->timer_info == NULL)
     {
-        printlog(errno, "add_peer: malloc failed");
+        ERROR(errno, "add_peer: malloc failed");
         delete_peer(p);
         return NULL;
     }
@@ -86,7 +86,7 @@ struct peer_profile_t* add_peer()
     p->timer_info->ack_array_pre = (struct ack_info_t *)malloc((p->timer_info->ack_array_size + 1) * sizeof(struct ack_info_t));
     if(p->timer_info->ack_array_pre == NULL)
     {
-        printlog(errno, "add_peer: malloc failed");
+        ERROR(errno, "add_peer: malloc failed");
         delete_peer(p);
         return NULL;
     }
@@ -96,7 +96,7 @@ struct peer_profile_t* add_peer()
     p->timer_info->ack_array_now = (struct ack_info_t *)malloc((p->timer_info->ack_array_size + 1) * sizeof(struct ack_info_t));
     if(p->timer_info->ack_array_now == NULL)
     {
-        printlog(errno, "add_peer: malloc failed");
+        ERROR(errno, "add_peer: malloc failed");
         delete_peer(p);
         return NULL;
     }
@@ -106,7 +106,7 @@ struct peer_profile_t* add_peer()
     p->flow_src = (struct flow_profile_t *)malloc(sizeof(struct flow_profile_t));
     if(p->flow_src == NULL)
     {
-        printlog(errno, "add_peer: malloc failed");
+        ERROR(errno, "add_peer: malloc failed");
         delete_peer(p);
         return NULL;
     }
@@ -116,7 +116,7 @@ struct peer_profile_t* add_peer()
     p->flow_src->ba_pre = bit_array_create(SEQ_LEVEL_1);
     if(p->flow_src->ba_pre == NULL)
     {
-        printlog(errno, "add_peer: malloc failed");
+        ERROR(errno, "add_peer: malloc failed");
         delete_peer(p);
         return NULL;
     }
@@ -126,7 +126,7 @@ struct peer_profile_t* add_peer()
     p->flow_src->ba_now = bit_array_create(SEQ_LEVEL_1);
     if(p->flow_src->ba_now == NULL)
     {
-        printlog(errno, "add_peer: malloc failed");
+        ERROR(errno, "add_peer: malloc failed");
         delete_peer(p);
         return NULL;
     }
@@ -203,49 +203,49 @@ int copy_peer(struct peer_profile_t* dst, struct peer_profile_t* src)
 {
     if(dst == NULL || src == NULL)
     {
-        printlog(ERROR_LEVEL, "error copy_peer: dst or src is NULL\n");
+        ERROR(0, "copy_peer: dst or src is NULL");
         return -1;
     }
 
     if(dst->peeraddr == NULL || src->peeraddr == NULL)
     {
-        printlog(ERROR_LEVEL, "error copy_peer: dst->peeraddr or src->peeraddr is NULL\n");
+        ERROR(0, "copy_peer: dst->peeraddr or src->peeraddr is NULL");
         return -1;
     }
 
     if(dst->pkt_index_array_pre == NULL || src->pkt_index_array_pre == NULL)
     {
-        printlog(ERROR_LEVEL, "error copy_peer: dst->pkt_index_array_pre or src->pkt_index_array_pre is NULL\n");
+        ERROR(0, "copy_peer: dst->pkt_index_array_pre or src->pkt_index_array_pre is NULL");
         return -1;
     }
 
     if(dst->pkt_index_array_now == NULL || src->pkt_index_array_now == NULL)
     {
-        printlog(ERROR_LEVEL, "error copy_peer: dst->pkt_index_array_now or src->pkt_index_array_now is NULL\n");
+        ERROR(0, "copy_peer: dst->pkt_index_array_now or src->pkt_index_array_now is NULL");
         return -1;
     }
 
     if(dst->timer_info == NULL || src->timer_info == NULL)
     {
-        printlog(ERROR_LEVEL, "error copy_peer: dst->timer_info or src->timer_info is NULL\n");
+        ERROR(0, "copy_peer: dst->timer_info or src->timer_info is NULL");
         return -1;
     }
 
     if(dst->timer_info->ack_array_pre == NULL || src->timer_info->ack_array_pre == NULL)
     {
-        printlog(ERROR_LEVEL, "error copy_peer: dst->ack_array_pre or src->ack_array_pre is NULL\n");
+        ERROR(0, "copy_peer: dst->ack_array_pre or src->ack_array_pre is NULL");
         return -1;
     }
 
     if(dst->timer_info->ack_array_now == NULL || src->timer_info->ack_array_now == NULL)
     {
-        printlog(ERROR_LEVEL, "error copy_peer: dst->ack_array_now or src->ack_array_now is NULL\n");
+        ERROR(0, "copy_peer: dst->ack_array_now or src->ack_array_now is NULL");
         return -1;
     }
 
     if(dst->flow_src == NULL || src->flow_src == NULL)
     {
-        printlog(ERROR_LEVEL, "error copy_peer: dst->flow_src or src->flow_src is NULL\n");
+        ERROR(0, "copy_peer: dst->flow_src or src->flow_src is NULL");
         return -1;
     }
 
@@ -310,7 +310,7 @@ struct peer_profile_t** init_peer_table(FILE *secrets_file, int max_id)
     struct peer_profile_t ** peer_table = (struct peer_profile_t **)malloc((max_id+1) * sizeof(struct peer_profile_t*));
     if(peer_table == NULL)
     {
-        printlog(errno, "init_peer_table: malloc failed");
+        ERROR(errno, "init_peer_table: malloc failed");
         return NULL;
     }
     else
@@ -318,7 +318,7 @@ struct peer_profile_t** init_peer_table(FILE *secrets_file, int max_id)
 
     if(update_peer_table(peer_table, secrets_file, max_id) < 0)
     {
-        printlog(ERROR_LEVEL, "init_peer_table: update_peer_table failed\n");
+        ERROR(0, "init_peer_table: update_peer_table failed");
         destroy_peer_table(peer_table, max_id); 
         return NULL;
     }
@@ -331,7 +331,7 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
 {
     if(NULL == peer_table || NULL == secrets_file)
     {
-        printlog(ERROR_LEVEL, "error update_peer_table: peer_table or secrets_file is NULL\n");
+        ERROR(0, "update_peer_table: peer_table or secrets_file is NULL");
         return -1;
     }
     
@@ -344,7 +344,7 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
     char *line = (char *)malloc(len);
     if(line == NULL)
     {
-        printlog(errno, "update_peer_table: malloc failed");
+        ERROR(errno, "update_peer_table: malloc failed");
         return -1;
     }
     else
@@ -371,38 +371,38 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
             continue;
         if(NULL == psk_str)
         {
-            printlog(INFO_LEVEL, "Warning: PSK of ID %s not found, ignore this peer!\n", id_str);
+            WARNING("PSK of ID %s not found, ignore this peer!", id_str);
             continue;
         }
         id = inet_ptons(id_str);
         if(0 == id || id > max_id)
         {
-            printlog(INFO_LEVEL, "Warning: the ID of %s may be wrong, ignore this peer!\n", id_str);
+            WARNING("The ID of %s may be wrong, ignore this peer!", id_str);
             continue;
         }
         
         struct peer_profile_t * tmp_peer = add_peer();
         if(tmp_peer == NULL)
         {
-            printlog(errno, "update_peer_table: add_peer failed");
+            ERROR(errno, "update_peer_table: add_peer failed.");
             return -1;
         }
         if(peer_table[id] != NULL)
             if(copy_peer(tmp_peer, peer_table[id]) < 0)
-                printlog(ERROR_LEVEL, "Error: copy the ID of %s failed\n", id_str);
+                ERROR(0, "Copy the ID of %s failed.", id_str);
 
         tmp_peer->id = id;
         tmp_peer->discard = false;
 
         if(strlen(psk_str) > 2*AES_TEXT_LEN)
-            printlog(INFO_LEVEL, "Warning: PSK of ID %s is longer than %d, ignore some bytes.\n", id_str, 2*AES_TEXT_LEN);
+            WARNING("PSK of ID %s is longer than %d, ignore some bytes.", id_str, 2*AES_TEXT_LEN);
         strncpy((char*)tmp_peer->psk, psk_str, 2*AES_TEXT_LEN);
 
         if(port_str != NULL) //port_str must be parsed before ip, because servaddr.sin_port uses it.
         {
             int port = atoi(port_str);
             if(port < 1)
-                printlog(ERROR_LEVEL, "Warning: invalid PORT of peer: %s, ingore it's port value!\n", id_str);
+                WARNING("Invalid PORT of peer: %s, ingore it's port value!", id_str);
             tmp_peer->port = port;
         }
 
@@ -410,7 +410,7 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
         {
             char ip_str[IPV4_LEN] = "\0";
             if(hostname_to_ip(ip_name_str, ip_str) < 0)
-                printlog(ERROR_LEVEL, "Warning: invalid host of peer: %s, %s nslookup failed, ingore it's IP/Port value!\n", id_str, ip_name_str);
+                WARNING("Invalid host of peer: %s, %s nslookup failed, ingore it's IP/Port value!", id_str, ip_name_str);
             else
             {
                 inet_pton(AF_INET, ip_str, &(tmp_peer->peeraddr->sin_addr));
@@ -421,7 +421,7 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
         }
 
         if(ip6_str != NULL && strcmp(ip6_str, "none") != 0)
-            printlog(INFO_LEVEL, "IPv6 not supported now, ignore it!\n");
+            WARNING("IPv6 not supported now, ignore it!");
 
         tmp_peer->vip = htonl(id); //0.0.x.x in network byte order, used inside tunnel.
         //tmp_peer->rip = (global_tunif.addr & global_tunif.mask) | htonl(id); //in network byte order.
@@ -440,15 +440,15 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
 
         if(peer_table[id] != NULL)
         {
-            printlog(INFO_LEVEL, "Warning: update the ID of %s\n", id_str);
+            INFO("update the ID of %s.", id_str);
             if(copy_peer(peer_table[id], tmp_peer) < 0)
-                printlog(ERROR_LEVEL, "Error: update the ID of %s failed\n", id_str);
+                ERROR(0, "Update the ID of %s failed", id_str);
             delete_peer(tmp_peer);
             tmp_peer = NULL;
         }
         else
         {
-            printlog(INFO_LEVEL, "Info: add the ID of %s\n", id_str);
+            INFO("Add the ID of %s.", id_str);
             peer_table[id] = tmp_peer;
         }
     }
@@ -459,7 +459,7 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
         if(peer_table[i] != NULL)
             if(peer_table[i]->discard)
             {
-                printlog(INFO_LEVEL, "Warning: delete the ID of %d.%d\n", i/256, i%256);
+                WARNING("Delete the ID of %d.%d.", i/256, i%256);
                 delete_peer(peer_table[i]);
                 peer_table[i] = NULL;
             }

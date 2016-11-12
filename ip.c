@@ -1,6 +1,3 @@
-#include "ip.h"
-#include "log.h"
-
 #include <string.h>
 #include <ctype.h>
 #include <netdb.h>
@@ -8,18 +5,23 @@
 #include <stdio.h>
 #include <arpa/inet.h>
 
+#include "ip.h"
+#include "log.h"
+
 
 static uint16_t global_ipv4_mask_fragoff;
 
-int16_t inet_ptons(char *a)
+uint16_t inet_ptons(const char *a)
 {
     if(a == NULL)
         return 0;
+
     uint8_t n1, n2;
     char *c = strdup(a);
     char delim[] = ".";
     char *a1 = strtok(c, delim);
     char *a2 = strtok(NULL, delim);
+
     if(a2 == NULL)
         return 0;
 
@@ -29,6 +31,7 @@ int16_t inet_ptons(char *a)
             continue;
         else
             return 0;
+
     for(i=0; i<strlen(a2); i++)
         if(isdigit(a2[i]))
             continue;
@@ -38,10 +41,12 @@ int16_t inet_ptons(char *a)
     n1 = atoi(a1);
     n2 = atoi(a2);
 
+    free(c);
+
     return ( n1 * 256 + n2 );
 }
 
-int hostname_to_ip(char *hostname , char *ip)
+int hostname_to_ip(const char *hostname , char *ip)
 {
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_in *h;
@@ -53,7 +58,7 @@ int hostname_to_ip(char *hostname , char *ip)
     int rv = getaddrinfo(hostname, "http", &hints, &servinfo);
     if(rv != 0) 
     {
-        printlog(errno, "getaddrinfo: %s: %s", hostname, gai_strerror(rv));
+        ERROR(errno, "getaddrinfo: %s: %s", hostname, gai_strerror(rv));
         return -1;
     }
  

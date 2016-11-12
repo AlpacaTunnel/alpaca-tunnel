@@ -1,6 +1,7 @@
-#include "aes.h"
 #include <stdlib.h>
 #include <string.h>
+
+#include "aes.h"
 
 static void SetNbNkNr(int key_len, int *Nb, int *Nk, int *Nr);
 static void KeyExpansion(const byte *cipher_key, int Nk, int Nr, byte w[4][60]);
