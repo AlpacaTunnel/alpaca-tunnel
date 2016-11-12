@@ -25,7 +25,7 @@ struct config_t
     int mtu;
     char * log_level;
     char * secret_file;
-    struct string_node * use_dns;  // a list of dns servers
+    struct string_node * use_dns;  // a list of dns servers, not used now
     struct string_node * local_routes;   // a list of networks or hosts
     struct string_node * pre_up_cmds;
     struct string_node * post_up_cmds;

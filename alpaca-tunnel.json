@@ -8,8 +8,9 @@
     "mtu": 1408,
     "log_level": "debug",
     "secret_file": "alpaca-tunnel.d/alpaca-secrets",
-    "use_dns": ["4.2.2.2"],
     "local_routes": ["114.114.114.114", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
     "pre_up_cmds": [],
-    "post_up_cmds": []
+    "post_up_cmds": [],
+    "pre_down_cmds": [],
+    "post_down_cmds": []
 }

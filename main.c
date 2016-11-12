@@ -275,6 +275,7 @@ int main(int argc, char *argv[])
     bool start_success = false;
     bool default_route_changed = false;
     bool server_ip_route_added = false;
+    struct string_node * local_route_list = NULL;
 
     char default_gw_ip[IP_LEN] = "\0";
     //char default_gw_dev[IFNAMSIZ] = "\0";
@@ -550,6 +551,13 @@ int main(int argc, char *argv[])
                 add_iproute(server_ip_str, default_gw_ip, "default");
             }
         }
+
+        char * local_route;
+        while( (local_route = shift_string_node(&config.local_routes) ) != NULL)
+        {
+            add_iproute(local_route, default_gw_ip, "default");
+            append_string_node(&local_route_list, local_route);
+        }
     }
 
     if(global_mode == mode_server)
@@ -729,6 +737,10 @@ _END:
                 char * server_ip_str = inet_ntoa(in);
                 del_iproute(server_ip_str, "default");
             }
+
+        char * local_route;
+        while( (local_route = shift_string_node(&local_route_list) ) != NULL)
+            del_iproute(local_route, "default");
     }
 
     if(global_mode == mode_server)
@@ -985,7 +997,7 @@ void* reset_link_route(void *arg)
         sleep(1);
         if(pre != global_sysroute_change)
         {
-            INFO("RTNETLINK: route changed.");
+            DEBUG("RTNETLINK: route changed.");
 
             if(clear_if_info(global_if_list) != 0)
                 continue;
@@ -999,7 +1011,7 @@ void* reset_link_route(void *arg)
             if(clear_route() != 0)
                 continue;
 
-            INFO("RTNETLINK: route table reset.");
+            DEBUG("RTNETLINK: route table reset.");
             pre = global_sysroute_change;
         }
     }
@@ -1130,12 +1142,12 @@ void* server_read(void *arg)
 
         if(NULL == peer_table[next_id] || 1 == next_id || global_self_id == next_id)
         {
-            INFO("tunif %s read packet to peer %d.%d: invalid peer!", global_tunif.name, next_id/256, next_id%256);
+            DEBUG("tunif %s read packet to peer %d.%d: invalid peer!", global_tunif.name, next_id/256, next_id%256);
             continue;
         }
         if(NULL == peer_table[next_id]->peeraddr)
         {
-            INFO("tunif %s read packet to peer %d.%d: invalid addr!", global_tunif.name, next_id/256, next_id%256);
+            DEBUG("tunif %s read packet to peer %d.%d: invalid addr!", global_tunif.name, next_id/256, next_id%256);
             continue;
         }
         memcpy(peeraddr, peer_table[next_id]->peeraddr, sizeof(struct sockaddr_in));
@@ -1150,12 +1162,12 @@ void* server_read(void *arg)
         //not supported now: read packet in tunif's subnet but ID mismatch
         if(src_inside != src_local)
         {
-            INFO("tunif %s read packet from other peer, ignore it!", global_tunif.name);
+            DEBUG("tunif %s read packet from other peer, ignore it!", global_tunif.name);
             continue;
         }
         else if(!dst_inside && !src_inside) //not supported now: outside IP to outside IP
         {
-            INFO("tunif %s read packet from outside net to outside net, ignore it!", global_tunif.name);
+            DEBUG("tunif %s read packet from outside net to outside net, ignore it!", global_tunif.name);
             continue;
         }  
 
@@ -1186,7 +1198,7 @@ void* server_read(void *arg)
         bigger_id = dst_id > src_id ? dst_id : src_id;
         if(NULL == peer_table[bigger_id])
         {
-            INFO("tunif %s read packet of invalid peer: %d.%d!", global_tunif.name, bigger_id/256, bigger_id%256);
+            DEBUG("tunif %s read packet of invalid peer: %d.%d!", global_tunif.name, bigger_id/256, bigger_id%256);
             continue;
         }
 
@@ -1227,7 +1239,7 @@ void* server_read(void *arg)
 
         if(peer_table[dst_id]->local_seq > SEQ_LEVEL_1)
         {
-            INFO("local_seq beyond limit, drop this packet to dst_id: %d.%d.", dst_id/256, dst_id%256);
+            DEBUG("local_seq beyond limit, drop this packet to dst_id: %d.%d.", dst_id/256, dst_id%256);
             continue;
         }
 
@@ -1452,7 +1464,7 @@ void* watch_timer_recv(void *arg)
             bigger_id = ack_id > global_self_id ? ack_id : global_self_id;
             if(NULL == peer_table[bigger_id])
             {
-                INFO("tunif %s read ack message to invalid peer: %d.%d!", global_tunif.name, bigger_id/256, bigger_id%256);
+                DEBUG("tunif %s read ack message to invalid peer: %d.%d!", global_tunif.name, bigger_id/256, bigger_id%256);
                 continue;
             }
             buf_psk = peer_table[bigger_id]->psk;
@@ -1531,7 +1543,7 @@ void* server_recv(void *arg)
         header_recv.ttl_flag_random.u16 = ntohs(header_recv.ttl_flag_random.u16);
         if(header_recv.ttl_flag_random.bit.random != 0)
         {
-            INFO("tunif %s received packet: group not match!", global_tunif.name);
+            DEBUG("tunif %s received packet: group not match!", global_tunif.name);
             continue;
         }
         
@@ -1541,14 +1553,14 @@ void* server_recv(void *arg)
 
         if(NULL == peer_table[bigger_id] || peer_table[bigger_id]->valid == false)
         {
-            INFO("tunif %s received packet from %d.%d to %d.%d: invalid peer: %d.%d!", 
+            DEBUG("tunif %s received packet from %d.%d to %d.%d: invalid peer: %d.%d!", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, bigger_id/256, bigger_id%256);
             continue;
         }
         //if(bigger_id != global_self_id && NULL == peer_table[bigger_id])
         if(src_id == 0 || src_id == 1 || src_id == global_self_id)
         {
-            INFO("tunif %s received packet from %d.%d to %d.%d: invalid src_id!", 
+            DEBUG("tunif %s received packet from %d.%d to %d.%d: invalid src_id!", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
             continue;
         }
@@ -1557,7 +1569,7 @@ void* server_recv(void *arg)
             //if dst_id == global_self_id, don't ckeck but write to tunif
             if(dst_id != global_self_id && binary_search(global_trusted_ip, 0, global_trusted_ip_cnt, peeraddr->sin_addr.s_addr) == -1)
             {
-                INFO("tunif %s received packet from %d.%d to %d.%d: src_id addr not trusted!", 
+                DEBUG("tunif %s received packet from %d.%d to %d.%d: src_id addr not trusted!", 
                     global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
                 continue;
             }
@@ -1568,7 +1580,7 @@ void* server_recv(void *arg)
         encrypt(buf_icv, buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
         if(strncmp((char*)buf_icv, (char*)(buf_recv+HEADER_LEN), ICV_LEN) != 0)
         {
-            INFO("tunif %s received packet from %d.%d to %d.%d: icv doesn't match!", 
+            DEBUG("tunif %s received packet from %d.%d to %d.%d: icv doesn't match!", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
             continue;
         }
@@ -1586,7 +1598,7 @@ void* server_recv(void *arg)
         {
             if(nr_aes_block > 10)
             {
-                INFO("msg too long, drop it now! will handle it when msg has seq number in header.");
+                DEBUG("msg too long, drop it now! will handle it when msg has seq number in header.");
                 continue;
             }
             //printf("============== recv msg type\n");
@@ -1686,23 +1698,23 @@ void* server_recv(void *arg)
             continue;
         }
         if(fs == -2)
-            INFO("tunif %s received packet from %d.%d to %d.%d: replay limit exceeded!", 
+            DEBUG("tunif %s received packet from %d.%d to %d.%d: replay limit exceeded!", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
         if(fs == -6)
         {
-            INFO("tunif %s received packet from %d.%d to %d.%d: replay limit exceeded!", 
+            DEBUG("tunif %s received packet from %d.%d to %d.%d: replay limit exceeded!", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
-            INFO("tunif %s set peer %d.%d to invalid: involve limit exceeded!", 
+            DEBUG("tunif %s set peer %d.%d to invalid: involve limit exceeded!", 
                 global_tunif.name, dst_id/256, dst_id%256);
         }
         if(fs == -3)
-            INFO("tunif %s received packet from %d.%d to %d.%d: time jump limit exceeded!", 
+            DEBUG("tunif %s received packet from %d.%d to %d.%d: time jump limit exceeded!", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
         if(fs == -5)
         {
-            INFO("tunif %s received packet from %d.%d to %d.%d: time jump limit exceeded!", 
+            DEBUG("tunif %s received packet from %d.%d to %d.%d: time jump limit exceeded!", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
-            INFO("tunif %s set peer %d.%d to invalid: involve limit exceeded!", 
+            DEBUG("tunif %s set peer %d.%d to invalid: involve limit exceeded!", 
                 global_tunif.name, dst_id/256, dst_id%256);
         }
         if(fs < 0)
@@ -1743,14 +1755,14 @@ void* server_recv(void *arg)
         bool dst_inside = ((daddr & global_tunif.mask) == (global_tunif.addr & global_tunif.mask));
         if(header_recv.ttl_flag_random.bit.dst_inside == false && dst_inside == true)
         {
-            INFO("tunif %s received packet from %d.%d to %d.%d: probe packet, drop it!", 
+            DEBUG("tunif %s received packet from %d.%d to %d.%d: probe packet, drop it!", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
             continue;
         }
 
         if(0 == next_id)
         {
-            INFO("tunif %s received packet from %d.%d to %d.%d: no route!", 
+            DEBUG("tunif %s received packet from %d.%d to %d.%d: no route!", 
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
             continue;
         }
@@ -1793,7 +1805,7 @@ void* server_recv(void *arg)
             //packet dst is not local and ttl expire, drop packet. only allow 16 hops
             if(TTL_MIN == ttl)
             {
-                INFO("TTL expired! from %d.%d.%d.%d to %d.%d.%d.%d.",
+                WARNING("TTL expired! from %d.%d.%d.%d to %d.%d.%d.%d.",
                     ip_saddr.a, ip_saddr.b, ip_saddr.c, ip_saddr.d,
                     ip_daddr.a, ip_daddr.b, ip_daddr.c, ip_daddr.d);   
                 continue;
@@ -1802,20 +1814,20 @@ void* server_recv(void *arg)
             if(ALLOW_P2P != true)
                 if(header_recv.ttl_flag_random.bit.src_inside == true && header_recv.ttl_flag_random.bit.dst_inside == true)
                 {
-                    INFO("tunif %s received packet from %d.%d to %d.%d: peer_tablep not allowed!", 
+                    DEBUG("tunif %s received packet from %d.%d to %d.%d: peer_table not allowed!", 
                         global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
                     continue;
                 }
 
             if(NULL == peer_table[next_id])
             {
-                INFO("tunif %s recv packet from %d.%d to %d.%d: route to invalid next peer: %d.%d!", 
+                DEBUG("tunif %s recv packet from %d.%d to %d.%d: route to invalid next peer: %d.%d!", 
                     global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, next_id/256, next_id%256);
                 continue;
             }
             if(NULL == peer_table[next_id]->peeraddr)
             {
-                INFO("tunif %s recv packet from %d.%d to %d.%d: route to next peer %d.%d: invalid addr!", 
+                DEBUG("tunif %s recv packet from %d.%d to %d.%d: route to next peer %d.%d: invalid addr!", 
                     global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, next_id/256, next_id%256);
                 continue;
             }
@@ -1824,7 +1836,7 @@ void* server_recv(void *arg)
             if(peeraddr->sin_addr.s_addr == peer_table[next_id]->peeraddr->sin_addr.s_addr &&
                 peeraddr->sin_port == peer_table[next_id]->peeraddr->sin_port)
             {
-                INFO("tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
+                DEBUG("tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
                     global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, next_id/256, next_id%256);
                 continue;
             }
@@ -1902,7 +1914,7 @@ int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t
 
     if(pkt_seq >= ti->ack_array_size)
     {
-        INFO("pkt_seq beyond ack_array_size, ignore this packet from %d.%d to %d.%d.", 
+        DEBUG("pkt_seq beyond ack_array_size, ignore this packet from %d.%d to %d.%d.", 
             src_id/256, src_id%256, dst_id/256, dst_id%256);
         return 0;
     }
