@@ -176,6 +176,10 @@ void clean_lock_all(void *arg)
         ERROR(0, "This message means there is a thread exited during process runing.");
     }
 
+    // unlock a unlocked lock, the result is undefined, may cause segmentation fault.
+    // since this function is called more than once, so I have to return here.
+    return;
+
     //no thread should exit during process runing, so I put all unlock here, just for future debug.
     pthread_spin_unlock(&global_stat_spin);
     pthread_mutex_unlock(&global_write_mutex);
@@ -344,6 +348,7 @@ int main(int argc, char *argv[])
     // wait default route to come up
     if(global_mode == mode_client)
     {
+        INFO("searching default route in main table...");
         bool default_route_up = false;
         for(int i = 0; i < 10; ++i)
         {
