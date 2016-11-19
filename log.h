@@ -40,5 +40,7 @@ int log_debug(char* format, ...);
 
 int set_log_level(int en);
 int set_log_color();
+int set_log_time();
+
 
 #endif

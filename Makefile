@@ -1,8 +1,8 @@
 all:
-	gcc -std=gnu99 main.c aes.c log.c secret.c ip.c tunnel.c cmd_helper.c route.c data_struct.c config.c jsmn.c -lpthread -o alpaca-tunnel -Wall -O3
+	gcc -std=gnu99 main.c aes.c log.c secret.c ip.c tunnel.c cmd_helper.c route.c data_struct.c config.c jsmn.c -lpthread -lm -o alpaca-tunnel -Wall -O3
 
 debug:
-	gcc -std=gnu99 main.c aes.c log.c secret.c ip.c tunnel.c cmd_helper.c route.c data_struct.c config.c jsmn.c -lpthread -o alpaca-tunnel -Wall -g
+	gcc -std=gnu99 main.c aes.c log.c secret.c ip.c tunnel.c cmd_helper.c route.c data_struct.c config.c jsmn.c -lpthread -lm -o alpaca-tunnel -Wall -g
 
 clean:
 	rm -f alpaca-tunnel

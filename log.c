@@ -1,5 +1,8 @@
 #include <stdarg.h>
 #include <stdio.h>
+#include <math.h>
+#include <time.h>
+#include <sys/time.h>
 
 #include "log.h"
 
@@ -14,7 +17,62 @@
 
 static int global_log_level = LOG_LEVEL_INFO;
 static int global_use_color = 0;
+static int global_print_time = 0;
 
+
+int print_time(FILE *stream)
+{
+    if(global_print_time == 0)
+        return 0;
+
+    char buffer[32];
+    int millisec;
+    struct tm* tm_info;
+    struct timeval tv;
+    
+    gettimeofday(&tv, NULL);
+    
+    millisec = lrint(tv.tv_usec / 1000.0); // Round to nearest millisec
+    if(millisec >= 1000) // Allow for rounding up to nearest second
+    {
+        millisec -=1000;
+        tv.tv_sec++;
+    }
+    
+    tm_info = localtime(&tv.tv_sec);
+    
+    strftime(buffer, 32, "%Y-%m-%d %H:%M:%S", tm_info);
+    printf("%s.%03d ", buffer, millisec);
+
+    fflush(NULL);
+    
+    return 0;
+}
+
+
+int print_time_sec(FILE *stream)
+{
+    if(global_print_time == 0)
+        return 0;
+
+    time_t timer;
+    char buffer[64];
+    struct tm* tm_info;
+
+    time(&timer);
+    tm_info = localtime(&timer);
+
+    strftime(buffer, 64, "%Y-%m-%d %H:%M:%S", tm_info);
+    fprintf(stream, "%s ", buffer);
+
+    return 0;
+}
+
+int set_log_time()
+{
+    global_print_time = 1;
+    return 0;
+}
 
 int set_log_color()
 {
@@ -33,6 +91,7 @@ int log_critical(int en, char* format, ...)
     if(global_log_level > LOG_LEVEL_CRITICAL)
         return 0;
 
+    print_time(stderr);
     if(global_use_color)
         fprintf(stderr, ANSI_COLOR_RED"[CRITICAL] ");
     else
@@ -65,6 +124,7 @@ int log_error(int en, char* format, ...)
     if(global_log_level > LOG_LEVEL_ERROR)
         return 0;
 
+    print_time(stderr);
     if(global_use_color)
         fprintf(stderr, ANSI_COLOR_RED"[ERROR] ");
     else
@@ -98,6 +158,7 @@ int log_warning(char* format, ...)
     if(global_log_level > LOG_LEVEL_WARNING)
         return 0;
     
+    print_time(stdout);
     if(global_use_color)
         fprintf(stdout, ANSI_COLOR_YELLOW"[WARNING] ");
     else
@@ -123,6 +184,7 @@ int log_info(char* format, ...)
     if(global_log_level > LOG_LEVEL_INFO)
         return 0;
     
+    print_time(stdout);
     fprintf(stdout, "[INFO] ");
 
     va_list arglist;
@@ -142,6 +204,7 @@ int log_debug(char* format, ...)
     if(global_log_level > LOG_LEVEL_DEBUG)
         return 0;
     
+    print_time(stdout);
     fprintf(stdout, "[DEBUG] ");
 
     va_list arglist;

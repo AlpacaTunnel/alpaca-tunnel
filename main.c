@@ -22,7 +22,7 @@
 
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "2.5"
+#define VERSION         "2.6"
 
 /*
  * Config file path choose order:
@@ -65,12 +65,13 @@
 //numbers of packets, let's set it 20000 = 00.2*SEQ_LEVEL_1, store 20-milliseconds packets at full speed.
 //ocupy about 2*20000*1500 = 60M memory, allow max speed of about 1Mpps TCP-ACK packets.
 //but if don't store sent/wrote packets, 200 is enough for inter-threads buffer with 100Mbps speed.
-#define WRITE_BUF_SIZE 20000
-#define SEND_BUF_SIZE  20000
+#define WRITE_BUF_SIZE 50000
+#define SEND_BUF_SIZE  50000
 #define EPOLL_MAXEVENTS 1024
-#define ACK_NUM 3
-#define ACK_FIRST_TIME 30000000
-#define ACK_INTERVAL 60000000
+#define ACK_NUM 2
+#define MID_ACK_FIRST_TIME  10000000
+#define LAST_ACK_FIRST_TIME 30000000
+#define ACK_INTERVAL        60000000
 
 
 struct packet_profile_t
@@ -163,7 +164,7 @@ uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src);
 
 int usage(char *pname)
 {
-    printf("Usage: %s [-v|V] [-c|C config]\n", pname);
+    printf("Usage: %s [-t|T] [-v|V] [-c|C config]\n", pname);
     return 0;
 }
 
@@ -249,7 +250,7 @@ int main(int argc, char *argv[])
 {
 
     int opt;
-    while((opt = getopt(argc, argv, "vVc:C:")) != -1)
+    while((opt = getopt(argc, argv, "tTvVc:C:")) != -1)
     {
         switch(opt)
         {
@@ -260,6 +261,10 @@ int main(int argc, char *argv[])
         case 'c':
         case 'C':
             strncpy((char*)global_json_path, optarg, PATH_LEN);
+            break;
+        case 't':
+        case 'T':
+            set_log_time();
             break;
         default:
             usage(argv[0]);
@@ -721,6 +726,9 @@ int main(int argc, char *argv[])
     pthread_cancel(tid8);
     pthread_cancel(tid9);
     pthread_cancel(tid10);
+
+    // what happens to a locked lock when cancel the thread?
+    // what happens when destory a locked lock?
 
 
 /******************* clear env *******************/
@@ -1346,6 +1354,7 @@ void* server_send(void *arg)
 
         if(dup)  //todo: it's better to add a timer here
         {
+            // DEBUG("dup send packet");
             len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
             if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
                 ERROR(errno, "tunif %s sendto dst_id %d.%d socket error when dup", global_tunif.name, dst_id/256, dst_id%256);
@@ -1463,6 +1472,9 @@ void* watch_timer_recv(void *arg)
             ack_msg.ack_type = htonl(ai->type);
             ack_msg.timestamp = htonl(ai->timestamp);
             ack_msg.seq = ai->seq;
+
+            // DEBUG("send ack %d:%d, type %d", ai->timestamp, ai->seq, ai->type);
+
             ack_msg.seq = htonl(ack_msg.seq);
             memcpy(buf_load, &ack_msg, len_load);
 
@@ -1610,11 +1622,13 @@ void* server_recv(void *arg)
             for(i=0; i<nr_aes_block; i++)
                 decrypt(buf_load+i*AES_TEXT_LEN, buf_recv+HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
             memcpy(&ack_msg, buf_load, len_load);
-            ack_msg.src_id = htons(ack_msg.src_id);
-            ack_msg.dst_id = htons(ack_msg.dst_id);
-            ack_msg.ack_type = htonl(ack_msg.ack_type);
-            ack_msg.timestamp = htonl(ack_msg.timestamp);
-            ack_msg.seq = htonl(ack_msg.seq);
+            ack_msg.src_id = ntohs(ack_msg.src_id);
+            ack_msg.dst_id = ntohs(ack_msg.dst_id);
+            ack_msg.ack_type = ntohl(ack_msg.ack_type);
+            ack_msg.timestamp = ntohl(ack_msg.timestamp);
+            ack_msg.seq = ntohl(ack_msg.seq);
+
+            // DEBUG(">>> recv ack %d:%d, type %d", ack_msg.timestamp, ack_msg.seq, ack_msg.ack_type);
 
             if(ack_msg.timestamp == global_local_time)
             {
@@ -1633,8 +1647,9 @@ void* server_recv(void *arg)
             int max_seq = 0, min_seq = 0;
             if(ack_msg.ack_type == TIMER_TYPE_LAST)
             {
+                int after_last_nr = 1;   //may adjust the num.
                 min_seq = ack_msg.seq + 1;
-                max_seq = (ack_msg.seq + 10) < peer_table[ack_msg.dst_id]->local_seq ? (ack_msg.seq + 10) : peer_table[ack_msg.dst_id]->local_seq;  //may adjust the num 10.
+                max_seq = (ack_msg.seq + after_last_nr) < peer_table[ack_msg.dst_id]->local_seq ? (ack_msg.seq + after_last_nr) : peer_table[ack_msg.dst_id]->local_seq;
             }
             else
             {
@@ -1653,8 +1668,18 @@ void* server_recv(void *arg)
                 uint32_t buf_index_pre = pkt_index_array_pre[seq];
                 uint32_t buf_index_now = pkt_index_array_now[seq];
                 if(buf_index_pre > SEND_BUF_SIZE || buf_index_now > SEND_BUF_SIZE)
+                {
+                    DEBUG("buf_index_pre: %d, buf_index_now: %d", buf_index_pre, buf_index_now);
                     continue;
+                }
     
+                if(pthread_mutex_lock(&global_send_mutex) != 0)
+                {
+                    ERROR(errno, "pthread_mutex_lock");
+                    ERROR(0, "ignore this ack_msg to dst_id: %d.%d", ack_msg.dst_id/256, ack_msg.dst_id%256);
+                    continue;
+                }
+
                 uint32_t buf_index;
                 if(global_send_buf[buf_index_pre].dst_id == ack_msg.dst_id && 
                     global_send_buf[buf_index_pre].src_id == ack_msg.src_id &&
@@ -1671,14 +1696,26 @@ void* server_recv(void *arg)
                     buf_index = buf_index_now;
                 }
                 else
+                {
+                    DEBUG("--- retrans packet not fount");
+                    if(pthread_mutex_unlock(&global_send_mutex) != 0)
+                        ERROR(errno, "pthread_mutex_unlock");
                     continue;  
+                }
     
                 int sockfd = global_send_buf[buf_index].send_fd;
                 int len = global_send_buf[buf_index].len;
                 dst_id = global_send_buf[buf_index].dst_id;
                 memcpy(peeraddr, global_send_buf[buf_index].dst_addr, sizeof(struct sockaddr_in));
                 memcpy(buf_send, global_send_buf[buf_index].buf_packet, len);
+
+                pthread_cond_signal(&global_send_cond);
+    
+                if(pthread_mutex_unlock(&global_send_mutex) != 0)
+                    ERROR(errno, "pthread_mutex_unlock");
             
+                // DEBUG("=== resend packet %d:%d", global_send_buf[buf_index].timestamp, global_send_buf[buf_index].seq);
+
                 int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
                 if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
                     ERROR(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
@@ -2037,7 +2074,10 @@ int add_timerfd_epoll(int epfd, uint8_t type, struct ack_info_t * info)
 {
     struct itimerspec new_value;
     new_value.it_value.tv_sec = 0;
-    new_value.it_value.tv_nsec = ACK_FIRST_TIME;
+    if(type == TIMER_TYPE_MID)
+        new_value.it_value.tv_nsec = MID_ACK_FIRST_TIME;
+    else
+        new_value.it_value.tv_nsec = LAST_ACK_FIRST_TIME;
     new_value.it_interval.tv_sec = 0;
     new_value.it_interval.tv_nsec = ACK_INTERVAL;
 
@@ -2148,6 +2188,7 @@ int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t d
     {
         if(bit_array_get(fp->ba_now, pkt_seq) == 1)
         {
+            // DEBUG("---------- recv dup, %d:%d, time_diff: 0", pkt_time, pkt_seq);
             fp->dup_cnt++;
             return -1;
         }
@@ -2158,6 +2199,7 @@ int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t d
     {
         if(bit_array_get(fp->ba_pre, pkt_seq) == 1)
         {
+            // DEBUG("---------- recv dup, %d:%d, time_diff: -1", pkt_time, pkt_seq);
             fp->dup_cnt++;
             return -1;
         }
