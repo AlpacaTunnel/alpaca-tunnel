@@ -22,7 +22,7 @@
 
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "2.6"
+#define VERSION         "2.7"
 
 /*
  * Config file path choose order:
@@ -36,12 +36,12 @@
  * 2) Otherwise, the secret file MUST be located at the relative path `alpaca-tunnel.d/alpaca-secrets` to the config json, NOT with exe!
 */
 
-#define ABSOLUTE_PATH_TO_JSON       "/etc/alpaca-tunnel.json"
-#define ABSOLUTE_PATH_TO_JSON_LOCAL     "/usr/local/etc/alpaca-tunnel.json"
-#define RELATIVE_PATH_TO_JSON       "alpaca-tunnel.json"
-#define RELATIVE_PATH_TO_SECRETS    "alpaca-tunnel.d/alpaca-secrets"
-#define CONFIG_JSON_NAME    "alpaca-tunnel.json"
-#define SECRET_NAME         "alpaca-secrets"
+#define ABSOLUTE_PATH_TO_JSON        "/etc/alpaca-tunnel.json"
+#define ABSOLUTE_PATH_TO_JSON_LOCAL  "/usr/local/etc/alpaca-tunnel.json"
+#define RELATIVE_PATH_TO_JSON        "alpaca-tunnel.json"
+#define RELATIVE_PATH_TO_SECRETS     "alpaca-tunnel.d/alpaca-secrets"
+#define CONFIG_JSON_NAME             "alpaca-tunnel.json"
+#define SECRET_NAME                  "alpaca-secrets"
 
 #define PATH_LEN 1024
 
@@ -69,9 +69,8 @@
 #define SEND_BUF_SIZE  50000
 #define EPOLL_MAXEVENTS 1024
 #define ACK_NUM 2
-#define MID_ACK_FIRST_TIME  10000000
-#define LAST_ACK_FIRST_TIME 30000000
-#define ACK_INTERVAL        60000000
+#define ACK_FIRST_TIME  10000000
+#define ACK_INTERVAL    50000000
 
 
 struct packet_profile_t
@@ -398,7 +397,7 @@ int main(int argc, char *argv[])
     {
         strcpy(global_secrets_path, global_json_path);
         path_len = strlen(global_secrets_path);
-        while(global_secrets_path[path_len] != '/')
+        while(global_secrets_path[path_len] != '/' && path_len >= 0)
         {
             global_secrets_path[path_len] = '\0';
             path_len--;
@@ -417,7 +416,7 @@ int main(int argc, char *argv[])
 
     strcpy(global_secrets_dir, global_secrets_path);
     path_len = strlen(global_secrets_dir);
-    while(global_secrets_dir[path_len] != '/')
+    while(global_secrets_dir[path_len] != '/' && path_len >= 0)
     {
         global_secrets_dir[path_len] = '\0';
         path_len--;
@@ -1010,7 +1009,7 @@ void* reset_link_route(void *arg)
         sleep(1);
         if(pre != global_sysroute_change)
         {
-            DEBUG("RTNETLINK: route changed.");
+            // DEBUG("RTNETLINK: route changed.");
 
             if(clear_if_info(global_if_list) != 0)
                 continue;
@@ -1024,7 +1023,7 @@ void* reset_link_route(void *arg)
             if(clear_route() != 0)
                 continue;
 
-            DEBUG("RTNETLINK: route table reset.");
+            // DEBUG("RTNETLINK: route table reset.");
             pre = global_sysroute_change;
         }
     }
@@ -1669,7 +1668,7 @@ void* server_recv(void *arg)
                 uint32_t buf_index_now = pkt_index_array_now[seq];
                 if(buf_index_pre > SEND_BUF_SIZE || buf_index_now > SEND_BUF_SIZE)
                 {
-                    DEBUG("buf_index_pre: %d, buf_index_now: %d", buf_index_pre, buf_index_now);
+                    // DEBUG("buf_index_pre: %d, buf_index_now: %d", buf_index_pre, buf_index_now);
                     continue;
                 }
     
@@ -1697,7 +1696,7 @@ void* server_recv(void *arg)
                 }
                 else
                 {
-                    DEBUG("--- retrans packet not fount");
+                    DEBUG("--- retrans packet not found, ack_type: %d", ack_msg.ack_type);
                     if(pthread_mutex_unlock(&global_send_mutex) != 0)
                         ERROR(errno, "pthread_mutex_unlock");
                     continue;  
@@ -1950,6 +1949,9 @@ void* server_recv(void *arg)
 
 int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, struct peer_profile_t ** peer_table)
 {
+    if(ACK_NUM <= 0)  // don't send any ack msg
+        return 0;
+
     struct timer_info_t * ti = peer_table[src_id]->timer_info;
     struct flow_profile_t * fp = peer_table[src_id]->flow_src;
     struct bit_array_t * ba = NULL;
@@ -2072,12 +2074,12 @@ int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t
 //this function slows down the tunnel from 100% to 70% bps. should rewrite it latter.
 int add_timerfd_epoll(int epfd, uint8_t type, struct ack_info_t * info)
 {
+    if(type == TIMER_TYPE_LAST)
+        return 0; // don't send last recived ack, because I found it useless, only cause dup packets.
+
     struct itimerspec new_value;
     new_value.it_value.tv_sec = 0;
-    if(type == TIMER_TYPE_MID)
-        new_value.it_value.tv_nsec = MID_ACK_FIRST_TIME;
-    else
-        new_value.it_value.tv_nsec = LAST_ACK_FIRST_TIME;
+    new_value.it_value.tv_nsec = ACK_FIRST_TIME;
     new_value.it_interval.tv_sec = 0;
     new_value.it_interval.tv_nsec = ACK_INTERVAL;
 
@@ -2119,6 +2121,8 @@ int add_timerfd_epoll(int epfd, uint8_t type, struct ack_info_t * info)
 */
 int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, struct peer_profile_t ** peer_table)
 {
+    // DEBUG("=== recv pkt, %d:%d", pkt_time, pkt_seq);
+
     global_pkt_cnt++;
     struct flow_profile_t * fp = NULL;
 
