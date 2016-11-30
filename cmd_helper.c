@@ -10,12 +10,12 @@
 static int iptables_nat_set = 0;
 static int iptables_tcpmss_set = 0;
 
-int run_cmd_list(struct string_node ** cmd_list)
+int run_cmd_list(ll_node_t ** cmd_list)
 {
     char *cmd;
     int rc;
     int flag = 0;
-    while( (cmd = shift_string_node(cmd_list) ) != NULL)
+    while( (cmd = shift_ll(cmd_list) ) != NULL)
     {
         rc = system(cmd);
         if(rc != 0)

@@ -5,6 +5,8 @@
 
 #include <stdint.h>
 
+#include "data_struct.h"
+
 //reserved ID: 0.0, 0.1, 255.255, any server/client cann't use.
 #define MAX_ID 65535
 #define MAX_ID_LEN 7  // 254.254
@@ -25,12 +27,12 @@ struct config_t
     int mtu;
     char * log_level;
     char * secret_file;
-    struct string_node * use_dns;  // a list of dns servers, not used now
-    struct string_node * local_routes;   // a list of networks or hosts
-    struct string_node * pre_up_cmds;
-    struct string_node * post_up_cmds;
-    struct string_node * pre_down_cmds;
-    struct string_node * post_down_cmds;
+    ll_node_t * use_dns;  // a list of dns servers, not used now
+    ll_node_t * local_routes;   // a list of networks or hosts
+    ll_node_t * pre_up_cmds;
+    ll_node_t * post_up_cmds;
+    ll_node_t * pre_down_cmds;
+    ll_node_t * post_down_cmds;
 };
 
 int free_config(struct config_t * configure);

@@ -39,7 +39,7 @@ struct ack_info_t
     int fd;
 };
 
-struct timer_info_t
+struct timerfd_info_t
 {
     int fd_max_cnt; //max number of allowed timefd to create, avoid too many timerfd open, and also avoid sending too many msg when network is congested.  
     uint32_t time_pre;
@@ -64,7 +64,7 @@ struct peer_profile_t
     uint32_t local_seq;
     uint32_t * pkt_index_array_pre;  //store the indexes of sent packets in global buf
     uint32_t * pkt_index_array_now;
-    struct timer_info_t * timer_info;
+    struct timerfd_info_t * timerfd_info;
     struct tcp_info_t * tcp_info;
     int tcp_cnt;
     struct flow_profile_t * flow_src;

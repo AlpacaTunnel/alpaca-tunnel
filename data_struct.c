@@ -134,7 +134,7 @@ int bit_array_get(struct bit_array_t *ba, uint32_t index)
     return v;
 }
 
-int binary_search(const uint32_t arr[], int start, int end, int key)
+int binary_search(const int64_t arr[], int start, int end, int key)
 {
     int mid;
     while (start <= end) 
@@ -150,7 +150,8 @@ int binary_search(const uint32_t arr[], int start, int end, int key)
     return -1;
 }
 
-void bubble_sort(uint32_t arr[], int len)
+
+void bubble_sort(int64_t arr[], int len)
 {
     uint32_t i, j, temp;
     for (i = 0; i < len-1; i++)
@@ -163,57 +164,385 @@ void bubble_sort(uint32_t arr[], int len)
             }
 }
 
-
-struct string_node * append_string_node(struct string_node ** first, char * node)
+int min(int x, int y)
 {
-    struct string_node * new = (struct string_node *)malloc(sizeof(struct string_node));
+    return x < y ? x : y;
+}
+
+void merge_sort(int64_t arr[], int len)
+{
+    int64_t * a = arr;
+    int64_t * b = (int64_t*) malloc(len * sizeof(int64_t));
+    if(b == NULL)
+    {
+        ERROR(errno, "merge_sort: malloc failed");
+        return;
+    }
+    int64_t * mark_b = b;
+
+    int seg, start;
+    for(seg = 1; seg < len; seg += seg)
+    {
+        for(start = 0; start < len; start += seg + seg)
+        {
+            int low = start, mid = min(start + seg, len), high = min(start + seg + seg, len);
+            int k = low;
+            int start1 = low, end1 = mid;
+            int start2 = mid, end2 = high;
+            while(start1 < end1 && start2 < end2)
+                if(a[start1] < a[start2])
+                {
+                    b[k] = a[start1];
+                    k++; start1++;
+                }
+                else
+                {
+                    b[k] = a[start2];
+                    k++; start2++;
+                }
+            while(start1 < end1)
+            {
+                b[k] = a[start1];
+                k++; start1++;
+            }
+            while(start2 < end2)
+            {
+                b[k] = a[start2];
+                k++; start2++;
+            }
+        }
+        int64_t* temp = a;
+        a = b;
+        b = temp;
+        // at the end, a always holds the sorted array
+    }
+
+    if(a != arr)
+        for(int i = 0; i < len; i++)
+            arr[i] = a[i];
+    
+    free(mark_b);
+}
+
+
+ll_node_t * append_ll(ll_node_t ** first, void * data)
+{
+    ll_node_t * new = (ll_node_t *)malloc(sizeof(ll_node_t));
     if(new == NULL)
     {
-        ERROR(errno, "append_string_node: malloc failed");
+        ERROR(errno, "append_ll: malloc failed");
         return NULL;
     }
-    new->node = node;
+    new->data = data;
     new->next = NULL;
 
     if (*first == NULL)
         *first = new;
     else
     {
-        struct string_node * i = *first;
-        while(i->next != NULL)
-            i = i->next;
-        i->next = new;
+        ll_node_t * tmp = *first;
+        while(tmp->next != NULL)
+            tmp = tmp->next;
+
+        // append new to the last
+        tmp->next = new;
     }
     
     return new;
 }
 
-char * shift_string_node(struct string_node ** first)
+void * shift_ll(ll_node_t ** first)
 {
     if(*first == NULL)
         return NULL;
 
-    struct string_node * tmp = *first;
+    // get first node
+    ll_node_t * tmp = *first;
     *first = (*first)->next;
-    char * node = tmp->node;
+    void * data = tmp->data;
     free(tmp);
 
-    return node;
+    return data;
 }
 
-int free_string_node(struct string_node ** first)
+int free_ll(ll_node_t ** first)
 {
     if(*first == NULL)
         return 0;
 
-    struct string_node * tmp;
-    while((*first))
+    ll_node_t * tmp;
+    while(*first)
     {
         tmp = *first;
         *first = (*first)->next;
-        free(tmp->node);
+        free(tmp->data);
         free(tmp);
     }
 
     return 0;
 }
+
+
+int ll_array_init(ll_node_t ** head, uint size)
+{
+    // head is always the first node and cannot be borrowed.
+    size++;
+
+    ll_node_t * base = (ll_node_t *)malloc(size * sizeof(ll_node_t));
+    if(base == NULL)
+    {
+        ERROR(errno, "ll_array_init: malloc failed");
+        return -1;
+    }
+
+    for(int i = 0; i < size; ++i)
+    {
+        ll_node_t * next = base + (i + 1) % size;
+        base[i].next = next;
+        base[i].data = NULL;
+    }
+
+    *head = base;
+
+    return 0;
+}
+
+int ll_array_destory(ll_node_t * head)
+{
+    if(head != NULL)
+        free(head);
+
+    return 0;
+}
+
+ll_node_t * ll_array_borrow(ll_node_t * head)
+{
+    if(head == NULL)
+        return NULL;
+
+    if(head == head->next)
+    {
+        ERROR(0, "ll_array_borrow: list is empty!");
+        return NULL;
+    }
+    
+    // first is the head
+    ll_node_t * second = head->next;
+    ll_node_t * third = second->next;
+
+    head->next = third;
+
+    return second;
+}
+
+int ll_array_return(ll_node_t * head, ll_node_t * node)
+{
+    if(head == NULL || node == NULL)
+        return -1;
+
+    // first is the head
+    ll_node_t * second = head->next;
+    
+    head->next = node;
+    node->next = second;
+
+    return 0;
+}
+
+int ll_array_load_data(ll_node_t * head, uint array_size, uintptr_t data_base, uint unit_size)
+{
+    if(head == NULL || data_base == 0 || array_size == 0 || unit_size == 0)
+        return -1;
+
+    for(int i = 0; i < array_size; ++i)
+    {
+        ll_node_t * node = head + i;
+        void * data = (void *)(data_base + i * unit_size);
+        node->data = data;
+    }
+    return 0;
+}
+
+
+int pq_init(prior_q_t * queue, int size)
+{
+    size++;  // when front == rear, it occupies an empty node
+    pq_node_t * base = (pq_node_t *)malloc((size) * sizeof(pq_node_t));
+    if(base == NULL)
+    {
+        ERROR(errno, "pq_init: malloc failed");
+        return -1;
+    }
+
+    for(int i = 0; i < size; ++i)
+    {
+        base[i].priority = 0;
+        base[i].data = NULL;
+    }
+
+    queue->base = (uintptr_t)base;
+    queue->size = size;
+    queue->front = 0;
+    queue->rear = 0;
+
+    return 0;
+}
+
+int pq_destory(prior_q_t * queue)
+{
+    if(queue == NULL)
+        return 0;
+
+    // for(int i = 0; i < queue->size; ++i)
+    //    free(queue->base[i].data);
+
+    free((pq_node_t*)(queue->base));
+
+    return 0;
+}
+
+int pq_enq(prior_q_t * queue, pq_node_t * node)
+{
+    if(queue == NULL)
+        return -1;
+
+    int after_rear = (queue->rear + 1) % queue->size;
+    if(after_rear == queue->front) // queue is full
+    {
+        DEBUG("enqueue failed, queue is full");
+        return -1;
+    }
+
+    pq_node_t * rear_node = (pq_node_t*)(queue->base + queue->rear * sizeof(pq_node_t));
+    rear_node->priority = node->priority;
+    rear_node->data = node->data;
+
+    // change the index after data is ready. so the pq_sort() can sort the new and right data.
+    queue->rear = after_rear;
+
+    return 0;
+}
+
+int pq_deq(prior_q_t * queue, pq_node_t * node)
+{
+    if(queue->front == queue->rear) // empty
+        return -1;
+
+    // Copy the front node to another memory
+    // Don't return the front node, because in multi-thread environment, once queue->front changes,
+    // the node it points may be overwritten.
+    pq_node_t * front_node = (pq_node_t *)(queue->base + queue->front * sizeof(pq_node_t));
+    node->priority = front_node->priority;
+    node->data = front_node->data;
+
+    // change the index after data is copied.
+    queue->front = (queue->front + 1) % queue->size;
+
+    return 0;
+}
+
+int pq_reduce(prior_q_t * queue, int p)
+{
+    if(queue->front == queue->rear) // empty
+        return -1;
+
+    int len = (queue->rear - queue->front + queue->size) % queue->size;
+    pq_node_t * base = (pq_node_t *)(queue->base);
+
+    for(int i = 0; i < len; i++)
+        base[(i + queue->front) % queue->size].priority -= p;
+
+    return 0;
+}
+
+int pq_look_first(prior_q_t * queue, pq_node_t * node)
+{
+    if(queue->front == queue->rear) // empty
+        return -1;
+
+    pq_node_t * front_node = (pq_node_t *)(queue->base + queue->front * sizeof(pq_node_t));
+    node->priority = front_node->priority;
+    node->data = front_node->data;
+
+    return 0;
+}
+
+int pq_sort(prior_q_t * queue, int order)
+{
+    if(queue == NULL)
+        return -1;
+
+    // during sorting, rear pointer may change, because there may be new data.
+    // so calculate len first.
+    int len = (queue->rear - queue->front + queue->size) % queue->size;
+
+    if(len <= 1)
+        return 0;
+    
+    pq_node_t * a = (pq_node_t *)malloc(len * sizeof(pq_node_t));
+    if(a == NULL)
+    {
+        ERROR(errno, "pq_sort: malloc failed");
+        return -1;
+    }
+
+    pq_node_t * b = (pq_node_t *)malloc(len * sizeof(pq_node_t));
+    if(b == NULL)
+    {
+        ERROR(errno, "pq_sort: malloc failed");
+        free(a);
+        return -1;
+    }
+
+    // for simplicity, copy all nodes to an array first
+    pq_node_t * base = (pq_node_t *)(queue->base);
+    for(int i = 0; i < len; i++)
+        a[i] = base[(i + queue->front) % queue->size];
+
+    int seg, start;
+    for(seg = 1; seg < len; seg += seg)
+    {
+        for(start = 0; start < len; start += seg + seg)
+        {
+            int low = start, mid = min(start + seg, len), high = min(start + seg + seg, len);
+            int k = low;
+            int start1 = low, end1 = mid;
+            int start2 = mid, end2 = high;
+            while(start1 < end1 && start2 < end2)
+                if(a[start1].priority < a[start2].priority)
+                {
+                    b[k] = a[start1];
+                    k++; start1++;
+                }
+                else
+                {
+                    b[k] = a[start2];
+                    k++; start2++;
+                }
+            while(start1 < end1)
+            {
+                b[k] = a[start1];
+                k++; start1++;
+            }
+            while(start2 < end2)
+            {
+                b[k] = a[start2];
+                k++; start2++;
+            }
+        }
+        pq_node_t * temp = a;
+        a = b;
+        b = temp;
+        // at the end, a always holds the sorted array
+    }
+
+    // copy the sorted array back
+    for(int i = 0; i < len; i++)
+        base[(i + queue->front) % queue->size] = a[i];
+
+    free(a);
+    free(b);
+
+    return 0;
+}
+

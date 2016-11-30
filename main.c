@@ -19,10 +19,11 @@
 #include "config.h"
 #include "bool.h"
 #include "cmd_helper.h"
+#include "timer.h"
 
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "2.7"
+#define VERSION         "2.8"
 
 /*
  * Config file path choose order:
@@ -65,16 +66,22 @@
 //numbers of packets, let's set it 20000 = 00.2*SEQ_LEVEL_1, store 20-milliseconds packets at full speed.
 //ocupy about 2*20000*1500 = 60M memory, allow max speed of about 1Mpps TCP-ACK packets.
 //but if don't store sent/wrote packets, 200 is enough for inter-threads buffer with 100Mbps speed.
-#define WRITE_BUF_SIZE 50000
-#define SEND_BUF_SIZE  50000
+#define WRITE_BUF_SIZE 5000
+#define SEND_BUF_SIZE  5000
 #define EPOLL_MAXEVENTS 1024
+#define TICK_QUEUE_SIZE (SEQ_LEVEL_1 * 2)
+#define TICK_INTERVAL 1 // 1 ms
 #define ACK_NUM 2
 #define ACK_FIRST_TIME  10000000
 #define ACK_INTERVAL    50000000
+#define ACK_WRITE_DELAY 100  // ms
+#define UDP_DUP_DELAY   100  // ms
 
 
+enum {pkt_none, pkt_write, pkt_send} packet_type = pkt_none;
 struct packet_profile_t
 {
+    int type;
     uint16_t src_id;
     uint16_t dst_id;
     uint32_t timestamp;
@@ -85,11 +92,15 @@ struct packet_profile_t
     int send_cnt;
     int len;
     bool dup;
+    timer_ms_t ms_timer;
     struct sockaddr_in * dst_addr;
     byte * buf_packet;
 };
 
+
 static struct packet_profile_t * global_write_buf = NULL;
+static struct packet_profile_t * global_tick_queue_buf = NULL;
+static ll_node_t * global_tick_list_head = NULL;
 static struct packet_profile_t * global_send_buf  = NULL;
 static int global_write_first = 0;
 static int global_write_last  = 0;
@@ -107,6 +118,7 @@ static uint16_t global_self_id = 0;
 static uint global_pkt_cnt = 0;
 static pthread_spinlock_t global_stat_spin;
 static pthread_spinlock_t global_time_seq_spin;
+static pthread_spinlock_t global_tick_queue_spin;
 
 //in network byte order.
 static struct if_info_t global_tunif;
@@ -122,10 +134,13 @@ static byte global_buf_group_psk[2*AES_TEXT_LEN] = "FUCKnimadeGFW!";
 static int global_tunfd, global_sockfd;
 static uint32_t global_local_time;
 //static uint32_t global_local_seq;
-static uint32_t* global_trusted_ip = NULL;
+static int64_t* global_trusted_ip = NULL;  // int64_t can hold uint32_t(IPv4 address)
 static int global_trusted_ip_cnt = 0;
 static int global_epoll_fd_recv = 0;
 static int global_epoll_fd_write = 0;
+static prior_q_t global_tick_queue;
+
+void* tick_queue(void *arg);
 
 //client_read and client_recv are obsoleted
 void* client_read(void *arg);
@@ -193,7 +208,7 @@ int init_global_values()
 {
     if(init_route_spin() < 0)
     {
-        ERROR(errno, "init_route_spin");
+        ERROR(0, "init_route_spin");
         return -1;
     }
     if(pthread_spin_init(&global_stat_spin, PTHREAD_PROCESS_PRIVATE) != 0)
@@ -202,6 +217,11 @@ int init_global_values()
         return -1;
     }
     if(pthread_spin_init(&global_time_seq_spin, PTHREAD_PROCESS_PRIVATE) != 0)
+    {
+        ERROR(errno, "pthread_spin_init");
+        return -1;
+    }
+    if(pthread_spin_init(&global_tick_queue_spin, PTHREAD_PROCESS_PRIVATE) != 0)
     {
         ERROR(errno, "pthread_spin_init");
         return -1;
@@ -241,13 +261,160 @@ int init_global_values()
         return -1;
     }
 
+    if(pq_init(&global_tick_queue, TICK_QUEUE_SIZE) == -1)
+    {
+        ERROR(0, "init_prior_q");
+        return -1;
+    }
+
+    global_write_buf = (struct packet_profile_t *)malloc(WRITE_BUF_SIZE * sizeof(struct packet_profile_t));
+    if(global_write_buf == NULL)
+    {
+        ERROR(errno, "malloc failed: global_write_buf");
+        return -1;
+    }
+    else
+    {
+        bzero(global_write_buf, WRITE_BUF_SIZE * sizeof(struct packet_profile_t));
+        int i;
+        for(i=0; i<WRITE_BUF_SIZE; i++)
+        {
+            global_write_buf[i].dst_addr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+            if(global_write_buf[i].dst_addr == NULL)
+            {
+                ERROR(errno, "malloc failed: global_write_buf");
+                return -1;
+            }
+            global_write_buf[i].buf_packet = (byte *)malloc(ETH_MTU);
+            if(global_write_buf[i].buf_packet == NULL)
+            {
+                ERROR(errno, "malloc failed: global_write_buf");
+                return -1;
+            }
+        }
+    }
+
+    global_send_buf = (struct packet_profile_t *)malloc(SEND_BUF_SIZE * sizeof(struct packet_profile_t));
+    if(global_send_buf == NULL)
+    {
+        ERROR(errno, "malloc failed: global_send_buf");
+        return -1;
+    }
+    else
+    {
+        bzero(global_send_buf, SEND_BUF_SIZE * sizeof(struct packet_profile_t));
+        int i;
+        for(i=0; i<SEND_BUF_SIZE; i++)
+        {
+            global_send_buf[i].dst_addr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+            if(global_send_buf[i].dst_addr == NULL)
+            {
+                ERROR(errno, "malloc failed: global_send_buf");
+                return -1;
+            }
+            global_send_buf[i].buf_packet = (byte *)malloc(ETH_MTU);
+            if(global_send_buf[i].buf_packet == NULL)
+            {
+                ERROR(errno, "malloc failed: global_send_buf");
+                return -1;
+            }
+        }
+    }
+
+    global_tick_queue_buf = (struct packet_profile_t *)malloc(TICK_QUEUE_SIZE * sizeof(struct packet_profile_t));
+    if(global_tick_queue_buf == NULL)
+    {
+        ERROR(errno, "malloc failed: global_tick_queue_buf");
+        return -1;
+    }
+    else
+    {
+        bzero(global_tick_queue_buf, TICK_QUEUE_SIZE * sizeof(struct packet_profile_t));
+        int i;
+        for(i=0; i<TICK_QUEUE_SIZE; i++)
+        {
+            global_tick_queue_buf[i].dst_addr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+            if(global_tick_queue_buf[i].dst_addr == NULL)
+            {
+                ERROR(errno, "malloc failed: global_tick_queue_buf");
+                return -1;
+            }
+            global_tick_queue_buf[i].buf_packet = (byte *)malloc(ETH_MTU);
+            if(global_tick_queue_buf[i].buf_packet == NULL)
+            {
+                ERROR(errno, "malloc failed: global_tick_queue_buf");
+                return -1;
+            }
+        }
+    }
+
+    ll_array_init(&global_tick_list_head, TICK_QUEUE_SIZE);
+
+    ll_array_load_data(global_tick_list_head, TICK_QUEUE_SIZE, (uintptr_t)global_tick_queue_buf, (uint)sizeof(struct packet_profile_t));
+    
     return 0;
 }
 
+int destory_global_values()
+{
+    destroy_route_spin();
+    pthread_spin_destroy(&global_stat_spin);
+    pthread_spin_destroy(&global_time_seq_spin);
+    pthread_spin_destroy(&global_tick_queue_spin);
+    pthread_mutex_destroy(&global_write_mutex);
+    pthread_mutex_destroy(&global_send_mutex);
+    pthread_cond_destroy(&global_write_cond);
+    pthread_cond_destroy(&global_send_cond);
+    close(global_epoll_fd_recv);
+    close(global_epoll_fd_write);
+    pq_destory(&global_tick_queue);
+
+    if(global_write_buf != NULL)
+    {
+        int i;
+        for(i=0; i<WRITE_BUF_SIZE; i++)
+        {
+            if(global_write_buf[i].dst_addr != NULL)
+                free(global_write_buf[i].dst_addr);
+            if(global_write_buf[i].buf_packet != NULL)
+                free(global_write_buf[i].buf_packet);
+        }
+        free(global_write_buf);
+    }
+
+    if(global_send_buf != NULL)
+    {
+        int i;
+        for(i=0; i<SEND_BUF_SIZE; i++)
+        {
+            if(global_send_buf[i].dst_addr != NULL)
+                free(global_send_buf[i].dst_addr);
+            if(global_send_buf[i].buf_packet != NULL)
+                free(global_send_buf[i].buf_packet);
+        }
+        free(global_send_buf);
+    }
+
+    if(global_tick_queue_buf != NULL)
+    {
+        int i;
+        for(i=0; i<TICK_QUEUE_SIZE; i++)
+        {
+            if(global_tick_queue_buf[i].dst_addr != NULL)
+                free(global_tick_queue_buf[i].dst_addr);
+            if(global_tick_queue_buf[i].buf_packet != NULL)
+                free(global_tick_queue_buf[i].buf_packet);
+        }
+        free(global_tick_queue_buf);
+    }
+
+    ll_array_destory(global_tick_list_head);
+
+    return 0;
+}
 
 int main(int argc, char *argv[])
 {
-
     int opt;
     while((opt = getopt(argc, argv, "tTvVc:C:")) != -1)
     {
@@ -283,7 +450,7 @@ int main(int argc, char *argv[])
     bool start_success = false;
     bool default_route_changed = false;
     bool server_ip_route_added = false;
-    struct string_node * local_route_list = NULL;
+    ll_node_t * local_route_list = NULL;
 
     char default_gw_ip[IP_LEN] = "\0";
     //char default_gw_dev[IFNAMSIZ] = "\0";
@@ -450,14 +617,14 @@ int main(int argc, char *argv[])
 
     if(CHECK_RESTRICTED_IP)
     {
-        global_trusted_ip = (uint32_t *)malloc((MAX_ID+1) * sizeof(uint32_t));;
+        global_trusted_ip = (int64_t *)malloc((MAX_ID+1) * sizeof(int64_t));;
         if(global_trusted_ip == NULL)
         {
             ERROR(errno, "Init global_trusted_ip: malloc failed");
             goto _END;
         }
         else
-            bzero(global_trusted_ip, (MAX_ID+1) * sizeof(uint32_t));
+            bzero(global_trusted_ip, (MAX_ID+1) * sizeof(int64_t));
 
         int i;
         for(i = 0; i < MAX_ID+1; i++)
@@ -466,7 +633,7 @@ int main(int argc, char *argv[])
                 global_trusted_ip[global_trusted_ip_cnt] = peer_table[i]->peeraddr->sin_addr.s_addr;
                 global_trusted_ip_cnt++;
             }
-        bubble_sort(global_trusted_ip, global_trusted_ip_cnt);
+        merge_sort(global_trusted_ip, global_trusted_ip_cnt);
     }
 
 
@@ -562,10 +729,10 @@ int main(int argc, char *argv[])
         }
 
         char * local_route;
-        while( (local_route = shift_string_node(&config.local_routes) ) != NULL)
+        while( (local_route = shift_ll(&config.local_routes) ) != NULL)
         {
             add_iproute(local_route, default_gw_ip, "default");
-            append_string_node(&local_route_list, local_route);
+            append_ll(&local_route_list, local_route);
         }
     }
 
@@ -578,70 +745,13 @@ int main(int argc, char *argv[])
 
     add_iptables_tcpmss(TCPMSS);
 
-
-/******************* malloc packet buffer *******************/
-
-    global_write_buf = (struct packet_profile_t *)malloc(WRITE_BUF_SIZE * sizeof(struct packet_profile_t));
-    if(global_write_buf == NULL)
-    {
-        ERROR(errno, "malloc failed: global_write_buf");
-        goto _END;
-    }
-    else
-    {
-        bzero(global_write_buf, WRITE_BUF_SIZE * sizeof(struct packet_profile_t));
-        int i;
-        for(i=0; i<WRITE_BUF_SIZE; i++)
-        {
-            global_write_buf[i].dst_addr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
-            if(global_write_buf[i].dst_addr == NULL)
-            {
-                ERROR(errno, "malloc failed: global_write_buf");
-                goto _END;
-            }
-            global_write_buf[i].buf_packet = (byte *)malloc(ETH_MTU);
-            if(global_write_buf[i].buf_packet == NULL)
-            {
-                ERROR(errno, "malloc failed: global_write_buf");
-                goto _END;
-            }
-        }
-    }
-
-    global_send_buf = (struct packet_profile_t *)malloc(SEND_BUF_SIZE * sizeof(struct packet_profile_t));
-    if(global_send_buf == NULL)
-    {
-        ERROR(errno, "malloc failed: global_send_buf");
-        goto _END;
-    }
-    else
-    {
-        bzero(global_send_buf, SEND_BUF_SIZE * sizeof(struct packet_profile_t));
-        int i;
-        for(i=0; i<SEND_BUF_SIZE; i++)
-        {
-            global_send_buf[i].dst_addr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
-            if(global_send_buf[i].dst_addr == NULL)
-            {
-                ERROR(errno, "malloc failed: global_send_buf");
-                goto _END;
-            }
-            global_send_buf[i].buf_packet = (byte *)malloc(ETH_MTU);
-            if(global_send_buf[i].buf_packet == NULL)
-            {
-                ERROR(errno, "malloc failed: global_send_buf");
-                goto _END;
-            }
-        }
-    }
-
     
 /******************* start all working threads *******************/
 
     global_running = 1;
 
-    int rc1=0, rc2=0, rc3=0, rc4=0, rc5=0, rc6=0, rc7=0, rc8=0, rc9=0, rc10=0;
-    pthread_t tid1=0, tid2=0, tid3=0, tid4=0, tid5=0, tid6=0, tid7=0, tid8=0, tid9=0, tid10=0;
+    int rc1=0, rc2=0, rc3=0, rc4=0, rc5=0, rc6=0, rc7=0, rc8=0, rc9=0, rc10=0, rc11=0;
+    pthread_t tid1=0, tid2=0, tid3=0, tid4=0, tid5=0, tid6=0, tid7=0, tid8=0, tid9=0, tid10=0, tid11=0;
 
     if( (rc1 = pthread_create(&tid1, NULL, server_recv, peer_table)) != 0 )
     {
@@ -695,6 +805,12 @@ int main(int argc, char *argv[])
         goto _END;
     }
 
+    if( (rc11 = pthread_create(&tid11, NULL, tick_queue, NULL)) != 0 )
+    {
+        ERROR(errno, "pthread_error: create rc11"); 
+        goto _END;
+    }
+
 
 /******************* main thread sleeps during running *******************/
 
@@ -725,6 +841,7 @@ int main(int argc, char *argv[])
     pthread_cancel(tid8);
     pthread_cancel(tid9);
     pthread_cancel(tid10);
+    pthread_cancel(tid11);
 
     // what happens to a locked lock when cancel the thread?
     // what happens when destory a locked lock?
@@ -751,7 +868,7 @@ _END:
             }
 
         char * local_route;
-        while( (local_route = shift_string_node(&local_route_list) ) != NULL)
+        while( (local_route = shift_ll(&local_route_list) ) != NULL)
             del_iproute(local_route, "default");
     }
 
@@ -782,43 +899,11 @@ _END:
     if(CHECK_RESTRICTED_IP && global_trusted_ip != NULL)
         free(global_trusted_ip);
 
-    destroy_route_spin();
-    pthread_spin_destroy(&global_stat_spin);
-    pthread_spin_destroy(&global_time_seq_spin);
-    pthread_mutex_destroy(&global_write_mutex);
-    pthread_mutex_destroy(&global_send_mutex);
-    pthread_cond_destroy(&global_write_cond);
-    pthread_cond_destroy(&global_send_cond);
+    destory_global_values();
 
     destroy_peer_table(peer_table, MAX_ID);
     peer_table = NULL;
 
-    if(global_write_buf != NULL)
-    {
-        int i;
-        for(i=0; i<WRITE_BUF_SIZE; i++)
-        {
-            if(global_write_buf[i].dst_addr != NULL)
-                free(global_write_buf[i].dst_addr);
-            if(global_write_buf[i].buf_packet != NULL)
-                free(global_write_buf[i].buf_packet);
-        }
-        free(global_write_buf);
-    }
-
-    if(global_send_buf != NULL)
-    {
-        int i;
-        for(i=0; i<SEND_BUF_SIZE; i++)
-        {
-            if(global_send_buf[i].dst_addr != NULL)
-                free(global_send_buf[i].dst_addr);
-            if(global_send_buf[i].buf_packet != NULL)
-                free(global_send_buf[i].buf_packet);
-        }
-        free(global_send_buf);
-    }
-    
     ERROR(0, "%s has exited.", PROCESS_NAME);
     if(start_success)
         exit(0);
@@ -861,6 +946,147 @@ uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src)
         add_route(next_hop_id, ip_dst, ip_src);
     }
     return next_hop_id;
+}
+
+void* tick_queue(void *arg)
+{
+    /*
+     * Only this thread will dequeue!
+    */
+    pq_node_t node2;
+    uint64_t fd_buf = 0;
+    struct packet_profile_t * delay_pkt;
+    struct sockaddr_in *peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+    byte * buf_write = (byte *)malloc(TUN_MTU);
+    byte * buf_send = (byte *)malloc(ETH_MTU);
+    int i;
+    for(i=0; i<ETH_MTU; i++)   //set random padding data
+        buf_send[i] = random();
+    int sockfd = 0;
+    int len = 0;
+    uint16_t dst_id = 0;
+    int tunfd = 0;
+
+    struct itimerspec tick_it;
+    tick_it.it_value.tv_sec = 0;
+    tick_it.it_value.tv_nsec = TICK_INTERVAL * 1000000;
+    tick_it.it_interval.tv_sec = 0;
+    tick_it.it_interval.tv_nsec = TICK_INTERVAL * 1000000;
+
+    int tick_fd = timerfd_create(CLOCK_MONOTONIC, 0);
+    if(tick_fd == -1)
+    {
+        ERROR(errno, "timerfd_create");
+        return NULL;
+    }
+    if(timerfd_settime(tick_fd, 0, &tick_it, NULL) == -1)
+    {
+        ERROR(errno, "timerfd_settime");
+        close(tick_fd);
+        return NULL;
+    }
+
+    // int pre_sort_tick = 0;
+    // int tick_nr = 0;
+    // int max_tick_round = 3600000; // 1 hour, let's assume no timer will be lager than 1 hour.
+    while(global_running)
+    {
+        // wait timerfd interval
+        if(read(tick_fd, &fd_buf, sizeof(uint64_t)) < 0)
+        {
+            ERROR(errno, "tunif %s read tick_fd", global_tunif.name);
+            continue;
+        }
+
+        // the priority is the timer's interval, so for every tick, should reduce all node's priority
+        pq_reduce(&global_tick_queue, TICK_INTERVAL);
+
+        if(global_tick_queue.sorted == 0)
+        {
+            pq_sort(&global_tick_queue, 0);
+
+            if(pthread_spin_lock(&global_tick_queue_spin) != 0)
+            {
+                ERROR(errno, "pthread_spin_lock");
+                continue;
+            }
+
+            global_tick_queue.sorted = 1;
+            
+            if(pthread_spin_unlock(&global_tick_queue_spin) != 0)
+            {
+                ERROR(errno, "pthread_spin_unlock");
+                continue;
+            }
+        }
+
+        bool dequeue_flag = true;
+        while(dequeue_flag)
+        {
+            if(pq_look_first(&global_tick_queue, &node2) != 0)
+            {
+                dequeue_flag = false;  // no data in queue
+                continue;
+            }
+        
+            ll_node_t * node1 = node2.data;
+            delay_pkt = node1->data;
+            if(!timer_elapsed(&(delay_pkt->ms_timer)))
+            {
+                dequeue_flag = false;  // the first timer in queue has not elapsed
+                // DEBUG("not elapsed");
+                continue;
+            }
+
+            if(pq_deq(&global_tick_queue, &node2) == 0)
+            {
+                if(pthread_spin_lock(&global_tick_queue_spin) != 0)
+                {
+                    ERROR(errno, "pthread_spin_lock");
+                    continue;
+                }
+
+                if(delay_pkt->type == pkt_write)
+                {
+                    // DEBUG("write delayed ack");
+                    tunfd = delay_pkt->write_fd;
+                    len = delay_pkt->len;
+                    dst_id = delay_pkt->dst_id;
+                    memcpy(buf_write, delay_pkt->buf_packet, len);
+                    
+                    if(write(tunfd, buf_write, len) < 0)
+                        ERROR(errno, "tunif %s write error of dst_id %d.%d", global_tunif.name, dst_id/256, dst_id%256);
+                }
+
+                if(delay_pkt->type == pkt_send)
+                {
+                    // DEBUG("send delayed pkt");
+                    sockfd = delay_pkt->send_fd;
+                    len = delay_pkt->len;
+        
+                    dst_id = delay_pkt->dst_id;
+                    memcpy(peeraddr, delay_pkt->dst_addr, sizeof(struct sockaddr_in));
+                    memcpy(buf_send, delay_pkt->buf_packet, len);
+
+                    int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
+                    if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
+                        ERROR(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
+                }
+
+                ll_array_return(global_tick_list_head, node1);
+
+                if(pthread_spin_unlock(&global_tick_queue_spin) != 0)
+                {
+                    ERROR(errno, "pthread_spin_unlock");
+                    continue;
+                }
+            }
+        }
+
+    }
+
+    free(buf_write);
+    return NULL;
 }
 
 void* watch_secret(void *arg)
@@ -956,7 +1182,7 @@ void* update_secret(void *arg)
             if(CHECK_RESTRICTED_IP)
             {
                 global_trusted_ip_cnt = 0;
-                bzero(global_trusted_ip, (MAX_ID+1) * sizeof(uint32_t));
+                bzero(global_trusted_ip, (MAX_ID+1) * sizeof(int64_t));
                 int i;
                 for(i = 0; i < MAX_ID+1; i++)
                     if(peer_table[i] != NULL && peer_table[i]->peeraddr != NULL && peer_table[i]->peeraddr->sin_addr.s_addr != 0)
@@ -966,7 +1192,7 @@ void* update_secret(void *arg)
                         global_trusted_ip[global_trusted_ip_cnt] = peer_table[i]->peeraddr->sin_addr.s_addr;
                         global_trusted_ip_cnt++;
                     }
-                bubble_sort(global_trusted_ip, global_trusted_ip_cnt);
+                merge_sort(global_trusted_ip, global_trusted_ip_cnt);
             }
 
             pre = global_secret_change;
@@ -1081,8 +1307,10 @@ void* server_reset_stat(void *arg)
     return NULL;
 }
 
-bool is_pkt_dup(struct peer_profile_t * p, byte* ip_load)
+bool should_pkt_dup(struct peer_profile_t * p, byte* ip_load)
 {
+    return true;
+
     if(p == NULL || p->tcp_info == NULL)
         return false;
     //struct tcp_info_t * tcp_info = p->tcp_info;
@@ -1090,11 +1318,20 @@ bool is_pkt_dup(struct peer_profile_t * p, byte* ip_load)
     struct tcphdr tcp_h;
     struct udphdr udp_h;
 
+
     memcpy(&ip_h, ip_load, sizeof(struct iphdr));
+
+    // DEBUG("iph tot_len: %d", ntohs(ip_h.tot_len));
+    // DEBUG("iph ihl: %d", ip_h.ihl * 4);
+
     if(6 == ip_h.protocol)
     {
         //printf("tcp\n");
         memcpy(&tcp_h, ip_load+sizeof(struct iphdr), sizeof(struct tcphdr));
+        // DEBUG("tcphdr doff: %d", tcp_h.doff * 4);
+
+        
+
         //printf("src: %d, dst: %d, seq: %u, ack: %u\n", htons(tcp_h.source), htons(tcp_h.dest), htonl(tcp_h.seq), htonl(tcp_h.ack_seq));
         if(htons(tcp_h.source) == 53 || htons(tcp_h.dest) == 53)
         {
@@ -1109,13 +1346,41 @@ bool is_pkt_dup(struct peer_profile_t * p, byte* ip_load)
             return true;
         }
         
+        
     }
     else if(17 == ip_h.protocol)
     {
+        return true; // dup all UDP
+
         //printf("udp\n");
         memcpy(&udp_h, ip_load+sizeof(struct iphdr), sizeof(struct udphdr));
         //printf("src: %d, dst: %d\n", htons(udp_h.source), htons(udp_h.dest));
         if(htons(udp_h.source) == 53 || htons(udp_h.dest) == 53)
+            return true;
+    }
+
+    return false;
+}
+
+bool should_pkt_delay(struct peer_profile_t * p, byte* ip_load)
+{
+    return false;
+    /*
+    * delay TCP ACK write
+    */
+
+    // if(p == NULL || p->tcp_info == NULL)
+        // return false;
+    
+    struct iphdr ip_h;
+    struct tcphdr tcp_h;
+
+    memcpy(&ip_h, ip_load, sizeof(struct iphdr));
+
+    if(6 == ip_h.protocol)
+    {
+        memcpy(&tcp_h, ip_load+sizeof(struct iphdr), sizeof(struct tcphdr));
+        if((ntohs(ip_h.tot_len) - ip_h.ihl * 4) == tcp_h.doff * 4 && tcp_h.ack == 1)  // pure ACK, not piggybacking
             return true;
     }
 
@@ -1267,7 +1532,7 @@ void* server_read(void *arg)
         for(i=0; i<nr_aes_block; i++)
             encrypt(buf_send+HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN, buf_load+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
 
-        bool dup = is_pkt_dup(peer_table[bigger_id], buf_load);
+        bool dup = should_pkt_dup(peer_table[bigger_id], buf_load);
         //if(dup)
         //    printf("should dup\n");
 
@@ -1351,12 +1616,46 @@ void* server_send(void *arg)
         if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
             ERROR(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
 
-        if(dup)  //todo: it's better to add a timer here
+        if(dup)  // add to tick_queue for delay
         {
+            if(pthread_spin_lock(&global_tick_queue_spin) != 0)
+            {
+                ERROR(errno, "pthread_spin_lock");
+                continue;
+            }
+
+            ll_node_t * node1 = ll_array_borrow(global_tick_list_head);  // malloc from the list and it's data pointer.
+            if(node1 == NULL)
+                ERROR(0, "tick_queue write_buf is full, drop this packet to next id: %d.%d", dst_id/256, dst_id%256);
+            else
+            {
+                struct packet_profile_t * pkt = (struct packet_profile_t *)(node1->data);
+                start_timer(&(pkt->ms_timer), UDP_DUP_DELAY);
+                pkt->type = pkt_send;
+                pkt->send_fd = sockfd;
+                pkt->len = len;
+                pkt->dst_id = dst_id;
+                memcpy(pkt->dst_addr, peeraddr, sizeof(struct sockaddr_in));
+                memcpy(pkt->buf_packet, buf_send, len);
+                pq_node_t node2;
+                node2.priority = UDP_DUP_DELAY;
+                node2.data = node1;
+                if(pq_enq(&global_tick_queue, &node2) == 0)
+                    global_tick_queue.sorted = 0;
+                else
+                    DEBUG("append delay_pkt into tick_queue failed");
+            }
+            
+            if(pthread_spin_unlock(&global_tick_queue_spin) != 0)
+            {
+                ERROR(errno, "pthread_spin_unlock");
+                continue;
+            }
+
             // DEBUG("dup send packet");
-            len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
-            if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
-                ERROR(errno, "tunif %s sendto dst_id %d.%d socket error when dup", global_tunif.name, dst_id/256, dst_id%256);
+            // len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
+            // if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
+            //     ERROR(errno, "tunif %s sendto dst_id %d.%d socket error when dup", global_tunif.name, dst_id/256, dst_id%256);
         }
 
         continue;
@@ -1812,31 +2111,78 @@ void* server_recv(void *arg)
             for(i=nr_aes_block_ipv4_header; i<nr_aes_block; i++)
                 decrypt(buf_load+i*AES_TEXT_LEN, buf_recv+HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
 
-            //copy write packet to write thread
-            if(pthread_mutex_lock(&global_write_mutex) != 0)
+            bool delay = should_pkt_delay(NULL, buf_load);
+            if(delay)
             {
-                ERROR(errno, "pthread_mutex_lock");
-                ERROR(0, "Drop this packet to next id: %d.%d", dst_id/256, dst_id%256);
-                continue;
+                // DEBUG("should delay");
+
+                if(pthread_spin_lock(&global_tick_queue_spin) != 0)
+                {
+                    ERROR(errno, "pthread_spin_lock");
+                    continue;
+                }
+
+                ll_node_t * node1 = ll_array_borrow(global_tick_list_head);  // malloc from the list and it's data pointer.
+
+                if(node1 == NULL)
+                    ERROR(0, "tick_queue write_buf is full, drop this packet to next id: %d.%d", dst_id/256, dst_id%256);
+                else
+                {
+                    struct packet_profile_t * pkt = (struct packet_profile_t *)(node1->data);
+                    start_timer(&(pkt->ms_timer), ACK_WRITE_DELAY);
+                    pkt->type = pkt_write;
+                    pkt->src_id = src_id;
+                    pkt->dst_id = dst_id;
+                    pkt->write_fd = global_tunfd;
+                    pkt->len = len_load;
+                    memcpy(pkt->dst_addr, peeraddr, sizeof(struct sockaddr_in));
+                    memcpy(pkt->buf_packet, buf_load, len_load);
+
+                    pq_node_t node2;
+                    node2.priority = ACK_WRITE_DELAY;
+                    node2.data = node1;
+
+                    if(pq_enq(&global_tick_queue, &node2) == 0)
+                        global_tick_queue.sorted = 0;
+                    else
+                        DEBUG("append ACK into tick_queue failed");
+                }
+                
+                if(pthread_spin_unlock(&global_tick_queue_spin) != 0)
+                {
+                    ERROR(errno, "pthread_spin_unlock");
+                    continue;
+                }
             }
-    
-            if((global_write_last + 1) % WRITE_BUF_SIZE == global_write_first)
-                ERROR(0, "write_buf is full, drop this packet to next id: %d.%d", dst_id/256, dst_id%256);
             else
             {
-                global_write_last = (global_write_last + 1) % WRITE_BUF_SIZE;
-                global_write_buf[global_write_last].src_id = src_id;
-                global_write_buf[global_write_last].dst_id = dst_id;
-                global_write_buf[global_write_last].write_fd = global_tunfd;
-                global_write_buf[global_write_last].len = len_load;
-                memcpy(global_write_buf[global_write_last].dst_addr, peeraddr, sizeof(struct sockaddr_in));
-                memcpy(global_write_buf[global_write_last].buf_packet, buf_load, len_load);
+                // DEBUG("should write now");
+                //copy write packet to write thread
+                if(pthread_mutex_lock(&global_write_mutex) != 0)
+                {
+                    ERROR(errno, "pthread_mutex_lock");
+                    ERROR(0, "Drop this packet to next id: %d.%d", dst_id/256, dst_id%256);
+                    continue;
+                }
+        
+                if((global_write_last + 1) % WRITE_BUF_SIZE == global_write_first)
+                    ERROR(0, "write_buf is full, drop this packet to next id: %d.%d", dst_id/256, dst_id%256);
+                else
+                {
+                    global_write_last = (global_write_last + 1) % WRITE_BUF_SIZE;
+                    global_write_buf[global_write_last].src_id = src_id;
+                    global_write_buf[global_write_last].dst_id = dst_id;
+                    global_write_buf[global_write_last].write_fd = global_tunfd;
+                    global_write_buf[global_write_last].len = len_load;
+                    memcpy(global_write_buf[global_write_last].dst_addr, peeraddr, sizeof(struct sockaddr_in));
+                    memcpy(global_write_buf[global_write_last].buf_packet, buf_load, len_load);
+                }
+        
+                pthread_cond_signal(&global_write_cond);
+        
+                if(pthread_mutex_unlock(&global_write_mutex) != 0)
+                    ERROR(errno, "pthread_mutex_unlock");
             }
-    
-            pthread_cond_signal(&global_write_cond);
-    
-            if(pthread_mutex_unlock(&global_write_mutex) != 0)
-                ERROR(errno, "pthread_mutex_unlock");
 
             continue;
         }
@@ -1891,9 +2237,12 @@ void* server_recv(void *arg)
             header_send.ttl_flag_random.bit.random = 0;
             header_send.ttl_flag_random.u16 = htons(header_send.ttl_flag_random.u16);
 
+            // after reducing ttl, should re-encrypt header and icv
             memcpy(buf_header, &header_send, HEADER_LEN);
             encrypt(buf_recv, buf_header, global_buf_group_psk, AES_KEY_LEN);  //encrypt header with group PSK
             encrypt(buf_recv+HEADER_LEN, buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
+
+            bool dup = should_pkt_dup(peer_table[bigger_id], buf_load);
 
             //copy send packet to send thread
             if(pthread_mutex_lock(&global_send_mutex) != 0)
@@ -1913,6 +2262,7 @@ void* server_recv(void *arg)
                 global_send_buf[global_send_last].dst_id = dst_id;
                 global_send_buf[global_send_last].send_fd = global_sockfd;
                 global_send_buf[global_send_last].len = len;
+                global_send_buf[global_send_last].dup = dup;
                 memcpy(global_send_buf[global_send_last].dst_addr, peeraddr, sizeof(struct sockaddr_in));
                 memcpy(global_send_buf[global_send_last].buf_packet, buf_recv, len);
                 if(pkt_seq < SEQ_LEVEL_1)
@@ -1952,7 +2302,7 @@ int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t
     if(ACK_NUM <= 0)  // don't send any ack msg
         return 0;
 
-    struct timer_info_t * ti = peer_table[src_id]->timer_info;
+    struct timerfd_info_t * ti = peer_table[src_id]->timerfd_info;
     struct flow_profile_t * fp = peer_table[src_id]->flow_src;
     struct bit_array_t * ba = NULL;
 

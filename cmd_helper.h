@@ -6,7 +6,7 @@
 
 #include "data_struct.h"
 
-int run_cmd_list(struct string_node ** cmd_list);  // after calling this func, cmd_list will be emptied.
+int run_cmd_list(ll_node_t ** cmd_list);  // after calling this func, cmd_list will be emptied.
 
 int enable_ip_forward();
 

@@ -33,12 +33,12 @@ int free_config(struct config_t * config)
     free(config->log_level);
     free(config->secret_file);
 
-    free_string_node(&config->use_dns);
-    free_string_node(&config->local_routes);
-    free_string_node(&config->pre_up_cmds);
-    free_string_node(&config->post_up_cmds);
-    free_string_node(&config->pre_down_cmds);
-    free_string_node(&config->post_down_cmds);
+    free_ll(&config->use_dns);
+    free_ll(&config->local_routes);
+    free_ll(&config->pre_up_cmds);
+    free_ll(&config->post_up_cmds);
+    free_ll(&config->pre_down_cmds);
+    free_ll(&config->post_down_cmds);
 
     return 0;
 }
@@ -160,7 +160,7 @@ int load_config(const char * config_file, struct config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                append_string_node(&config->use_dns, cg);
+                append_ll(&config->use_dns, cg);
             }
             i += t[i+1].size + 1;
         }
@@ -175,7 +175,7 @@ int load_config(const char * config_file, struct config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                append_string_node(&config->local_routes, cg);
+                append_ll(&config->local_routes, cg);
             }
             i += t[i+1].size + 1;
         } 
@@ -190,7 +190,7 @@ int load_config(const char * config_file, struct config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                append_string_node(&config->pre_up_cmds, cg);
+                append_ll(&config->pre_up_cmds, cg);
             }
             i += t[i+1].size + 1;
         } 
@@ -205,7 +205,7 @@ int load_config(const char * config_file, struct config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                append_string_node(&config->post_up_cmds, cg);
+                append_ll(&config->post_up_cmds, cg);
             }
             i += t[i+1].size + 1;
         }
@@ -220,7 +220,7 @@ int load_config(const char * config_file, struct config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                append_string_node(&config->pre_down_cmds, cg);
+                append_ll(&config->pre_down_cmds, cg);
             }
             i += t[i+1].size + 1;
         } 
@@ -235,7 +235,7 @@ int load_config(const char * config_file, struct config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                append_string_node(&config->post_down_cmds, cg);
+                append_ll(&config->post_down_cmds, cg);
             }
             i += t[i+1].size + 1;
         }
