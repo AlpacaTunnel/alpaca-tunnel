@@ -2,10 +2,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <net/if.h>
+#include <arpa/inet.h>
 
 #include "cmd_helper.h"
 #include "log.h"
 #include "ip.h"
+
+#ifndef IPV4_MAX_LEN
+    #define IPV4_MAX_LEN 17
+#endif
 
 static int iptables_nat_set = 0;
 static int iptables_tcpmss_set = 0;
@@ -95,41 +100,63 @@ int get_popen(const char * cmd, char ** output)
 }
 
 
-int get_default_route(char default_gw_ip[], char default_gw_dev[])
+int get_default_route(char * default_gw_ip, char * default_gw_dev)
 {
-    char cmd[] = "ip route show 0/0";  // default via 10.0.2.2 dev enp0s3
+    // default via 10.0.2.2 dev enp0s3
+    // default dev ppp0  scope link
+    char cmd[] = "ip route show 0/0";
     char * route;
     
-    if(get_popen(cmd, &route) == 0)
+    if(get_popen(cmd, &route) != 0)
+        return -1;
+    
+    char delim[] = "\t ";
+    char * c;
+    c = strtok(route, delim);
+    c = strtok(NULL, delim);
+    c = strtok(NULL, delim);
+    if(c == NULL)
     {
-        char delim[] = "\t ";
-        char * c;
-        c = strtok(route, delim);
-        c = strtok(NULL, delim);
-        c = strtok(NULL, delim);
-        if(c)
-            strncpy(default_gw_ip, c, 17);
-        else
-            return -1;
+        free(route);
+        return -1;
+    }
 
+    if(default_gw_ip)
+        default_gw_ip[0] = '\0';
+    if(default_gw_dev)
+        default_gw_dev[0] = '\0';
+
+    char tmp_str[IPV4_MAX_LEN];
+    uint32_t tmp_ip;
+    strncpy(tmp_str, c, IPV4_MAX_LEN);
+
+    if(inet_pton(AF_INET, tmp_str, &tmp_ip) == 1)
+    {
+        if(default_gw_ip)
+            strncpy(default_gw_ip, c, IPV4_MAX_LEN);
+    
         c = strtok(NULL, delim);
         c = strtok(NULL, delim);
         if(c && default_gw_dev)
             strncpy(default_gw_dev, c, IFNAMSIZ);
-        else
-            return -1;
+    }
+    else
+    {
+        if(default_gw_dev)
+            strncpy(default_gw_dev, c, IFNAMSIZ);
     }
 
+    free(route);
     return 0;
 }
 
 
-int change_route(const char * dst, const char * gw_ip, const char * table, int action)
+int change_route(const char * dst, const char * gw_ip, const char * gw_dev, const char * table, int action)
 {
     if(dst == NULL)
         return -1;
 
-    if(action == 0 && gw_ip == NULL)
+    if(action == 0 && gw_ip == NULL && gw_dev == NULL && gw_ip[0] == '\0' && gw_dev[0] == '\0')
         return -1;
 
     int rc = 0;
@@ -141,19 +168,37 @@ int change_route(const char * dst, const char * gw_ip, const char * table, int a
     }
 
     if(action == 0)
+    {
         if(table)
-            sprintf(cmd, "ip route add %s via %s table %s", dst, gw_ip, table);
+        {
+            if(gw_ip && gw_ip[0] != '\0' && gw_dev && gw_dev[0] != '\0')
+                sprintf(cmd, "ip route add %s via %s dev %s table %s", dst, gw_ip, gw_dev, table);
+            else if(gw_ip && gw_ip[0] != '\0')
+                sprintf(cmd, "ip route add %s via %s table %s", dst, gw_ip, table);
+            else if(gw_dev && gw_dev[0] != '\0')
+                sprintf(cmd, "ip route add %s dev %s table %s", dst, gw_dev, table);
+        }
         else
-            sprintf(cmd, "ip route add %s via %s", dst, gw_ip);
+        {
+            if(gw_ip && gw_ip[0] != '\0' && gw_dev && gw_dev[0] != '\0')
+                sprintf(cmd, "ip route add %s via %s dev %s", dst, gw_ip, gw_dev);
+            else if(gw_ip && gw_ip[0] != '\0')
+                sprintf(cmd, "ip route add %s via %s", dst, gw_ip);
+            else if(gw_dev && gw_dev[0] != '\0')
+                sprintf(cmd, "ip route add %s dev %s", dst, gw_dev);
+        }
+    }
     else
+    {
         if(table)
             sprintf(cmd, "ip route del %s table %s", dst, table);
         else
             sprintf(cmd, "ip route del %s", dst);
+    }
 
     if(system(cmd) != 0)
     {
-        WARNING("change route for %s failed.", dst);
+        WARNING("change route for %s failed. cmd is: %s", dst, cmd);
         rc = -1;
     }
 
@@ -162,25 +207,22 @@ int change_route(const char * dst, const char * gw_ip, const char * table, int a
     return rc;
 }
 
-int add_iproute(const char * dst, const char * gw_ip, const char * table)
+int add_iproute(const char * dst, const char * gw_ip, const char * gw_dev, const char * table)
 {
-    return change_route(dst, gw_ip, table, 0);
+    return change_route(dst, gw_ip, gw_dev, table, 0);
 }
 
 int del_iproute(const char * dst, const char * table)
 {
-    return change_route(dst, NULL, table, 1);
+    return change_route(dst, NULL, NULL, table, 1);
 }
 
 
-int change_default_route(const char gw_ip[])
+int change_default_route(const char * gw_ip, const char * gw_dev)
 {
-    if(gw_ip == NULL || gw_ip[0] == '\0')
-        return -1;
-
     int rc = 0;
     
-    if(add_iproute("default", gw_ip, "default") == 0)
+    if(add_iproute("default", gw_ip, gw_dev, "default") == 0)
     {
         if(del_iproute("default", "main") != 0)
             rc = -1;
@@ -195,14 +237,11 @@ int change_default_route(const char gw_ip[])
 }
 
 
-int restore_default_route(const char gw_ip[])
+int restore_default_route(const char * gw_ip, const char * gw_dev)
 {
-    if(gw_ip == NULL || gw_ip[0] == '\0')
-        return -1;
-
     int rc = 0;
     
-    if(add_iproute("default", gw_ip, "main") != 0)
+    if(add_iproute("default", gw_ip, gw_dev, "main") != 0)
     {
         WARNING("resrote default route failed.");
         rc = -1;

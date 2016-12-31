@@ -12,13 +12,13 @@ int enable_ip_forward();
 
 int get_popen(const char * cmd, char ** output);  // Caller must free the output latter.
 
-int get_default_route(char default_gw_ip[], char default_gw_dev[]);
+int get_default_route(char * default_gw_ip, char * default_gw_dev);
 
-int add_iproute(const char * dst, const char * gw_ip, const char * table);
+int add_iproute(const char * dst, const char * gw_ip, const char * gw_dev, const char * table);
 int del_iproute(const char * dst, const char * table);
 
-int change_default_route(const char gw_ip[]);
-int restore_default_route(const char gw_ip[]);
+int change_default_route(const char * gw_ip, const char * gw_dev);
+int restore_default_route(const char * gw_ip, const char * gw_dev);
 
 int add_iptables_nat(const char * source);
 int del_iptables_nat(const char * source);

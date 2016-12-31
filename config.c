@@ -12,7 +12,6 @@
 
 /*
  * This file was written on top of jsmn's example code.
- * I really don't understand it, but it works.
  */
 
 
@@ -32,6 +31,7 @@ int free_config(struct config_t * config)
     free(config->group);
     free(config->log_level);
     free(config->secret_file);
+    free(config->chnroute);
 
     free_ll(&config->use_dns);
     free_ll(&config->local_routes);
@@ -46,13 +46,6 @@ int free_config(struct config_t * config)
 
 int load_config(const char * config_file, struct config_t * config)
 {
-    int i;
-    int r;
-    jsmn_parser p;
-    jsmntok_t * t = (jsmntok_t *)malloc(CONFIG_TOKEN_NR_MAX*2);
-    if(t == NULL)
-        return -1;
-
     FILE *f = fopen(config_file, "r");
     if(f == NULL)
     {
@@ -73,28 +66,41 @@ int load_config(const char * config_file, struct config_t * config)
     
     json_string[fsize] = 0;
 
+    jsmn_parser p;
+    int tok_nr;
+    jsmntok_t * tok;
+
+    // jsmn_init(&p);
+    // tok_nr = jsmn_parse(&p, json_string, strlen(json_string), NULL, 0);
+
+    tok = (jsmntok_t *)malloc(CONFIG_TOKEN_NR_MAX*2);
+    if(tok == NULL)
+        return -1;
+
     jsmn_init(&p);
-    r = jsmn_parse(&p, json_string, strlen(json_string), t, CONFIG_TOKEN_NR_MAX*2);
-    if(r < 0)
+    tok_nr = jsmn_parse(&p, json_string, strlen(json_string), tok, CONFIG_TOKEN_NR_MAX*2);
+
+    if(tok_nr < 0)
     {
-        ERROR(0, "Failed to parse JSON: %d.", r);
+        ERROR(0, "Failed to parse JSON: %d.", tok_nr);
         return -1;
     }
 
     /* Assume the top-level element is an object */
-    if(r < 1 || t[0].type != JSMN_OBJECT)
+    if(tok_nr < 1 || tok[0].type != JSMN_OBJECT)
     {
         ERROR(0, "JSON Object expected at the top-level!");
         return -1;
     }
 
     /* Loop over all keys of the root object */
-    for(i = 1; i < r; i++)
+    int i;
+    for(i = 1; i < tok_nr; i++)
     {
-        char * start = json_string + t[i+1].start;
-        int len = t[i+1].end - t[i+1].start;
+        char * start = json_string + tok[i+1].start;
+        int len = tok[i+1].end - tok[i+1].start;
 
-        if(jsoneq(json_string, &t[i], "mode") == 0)
+        if(jsoneq(json_string, &tok[i], "mode") == 0)
         {
             config->mode = strndup(start, len);
             int i_tmp = 0;
@@ -102,149 +108,187 @@ int load_config(const char * config_file, struct config_t * config)
                 config->mode[i_tmp] = tolower(config->mode[i_tmp]);
             i++;
         } 
-        else if(jsoneq(json_string, &t[i], "group") == 0)
+        else if(jsoneq(json_string, &tok[i], "group") == 0)
         {
             config->group = strndup(start, len);
             i++;
         } 
-        else if(jsoneq(json_string, &t[i], "id") == 0) 
+        else if(jsoneq(json_string, &tok[i], "id") == 0) 
         {
             int len_id = len < MAX_ID_LEN ? len : MAX_ID_LEN;
             strncpy(config->id, start, len_id);
             i++;
         } 
-        else if(jsoneq(json_string, &t[i], "gateway") == 0) 
+        else if(jsoneq(json_string, &tok[i], "gateway") == 0) 
         {
             int len_id = len < MAX_ID_LEN ? len : MAX_ID_LEN;
             strncpy(config->gateway, start, len_id);
             i++;
         } 
-        else if(jsoneq(json_string, &t[i], "net") == 0) 
+        else if(jsoneq(json_string, &tok[i], "net") == 0) 
         {
             int len_id = len < MAX_ID_LEN ? len : MAX_ID_LEN;
             strncpy(config->net, start, len_id);
             i++;
         } 
-        else if(jsoneq(json_string, &t[i], "port") == 0) 
+        else if(jsoneq(json_string, &tok[i], "port") == 0) 
         {
             char * cc = strndup(start, len);
             config->port = strtol(cc, NULL, 10);
             free(cc);
             i++;
         } 
-        else if(jsoneq(json_string, &t[i], "mtu") == 0) 
+        else if(jsoneq(json_string, &tok[i], "mtu") == 0) 
         {
             char * cc = strndup(start, len);
             config->mtu = strtol(cc, NULL, 10);
             free(cc);
             i++;
         } 
-        else if(jsoneq(json_string, &t[i], "log_level") == 0) 
+        else if(jsoneq(json_string, &tok[i], "log_level") == 0) 
         {
             config->log_level = strndup(start, len);
             i++;
         } 
-        else if(jsoneq(json_string, &t[i], "secret_file") == 0) 
+        else if(jsoneq(json_string, &tok[i], "secret_file") == 0) 
         {
             config->secret_file = strndup(start, len);
             i++;
         } 
-        else if(jsoneq(json_string, &t[i], "use_dns") == 0) 
+        else if(jsoneq(json_string, &tok[i], "use_dns") == 0) 
         {
             int j;
-            if(t[i+1].type != JSMN_ARRAY) 
+            if(tok[i+1].type != JSMN_ARRAY) 
                 continue;
-            for(j = 0; j < t[i+1].size; j++) 
+            for(j = 0; j < tok[i+1].size; j++) 
             {
-                jsmntok_t *g = &t[i+j+2];
+                jsmntok_t *g = &tok[i+j+2];
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
                 append_ll(&config->use_dns, cg);
             }
-            i += t[i+1].size + 1;
+            i += tok[i+1].size + 1;
         }
-        else if(jsoneq(json_string, &t[i], "local_routes") == 0) 
+        else if(jsoneq(json_string, &tok[i], "local_routes") == 0) 
         {
             int j;
-            if(t[i+1].type != JSMN_ARRAY) 
+            if(tok[i+1].type != JSMN_ARRAY) 
                 continue;
-            for(j = 0; j < t[i+1].size; j++) 
+            for(j = 0; j < tok[i+1].size; j++) 
             {
-                jsmntok_t *g = &t[i+j+2];
+                jsmntok_t *g = &tok[i+j+2];
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
                 append_ll(&config->local_routes, cg);
             }
-            i += t[i+1].size + 1;
+            i += tok[i+1].size + 1;
         } 
-        else if(jsoneq(json_string, &t[i], "pre_up_cmds") == 0) 
+        else if(jsoneq(json_string, &tok[i], "pre_up_cmds") == 0) 
         {
             int j;
-            if(t[i+1].type != JSMN_ARRAY) 
+            if(tok[i+1].type != JSMN_ARRAY) 
                 continue;
-            for(j = 0; j < t[i+1].size; j++) 
+            for(j = 0; j < tok[i+1].size; j++) 
             {
-                jsmntok_t *g = &t[i+j+2];
+                jsmntok_t *g = &tok[i+j+2];
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
                 append_ll(&config->pre_up_cmds, cg);
             }
-            i += t[i+1].size + 1;
+            i += tok[i+1].size + 1;
         } 
-        else if(jsoneq(json_string, &t[i], "post_up_cmds") == 0) 
+        else if(jsoneq(json_string, &tok[i], "post_up_cmds") == 0) 
         {
             int j;
-            if(t[i+1].type != JSMN_ARRAY)
+            if(tok[i+1].type != JSMN_ARRAY)
                 continue;
-            for(j = 0; j < t[i+1].size; j++) 
+            for(j = 0; j < tok[i+1].size; j++) 
             {
-                jsmntok_t *g = &t[i+j+2];
+                jsmntok_t *g = &tok[i+j+2];
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
                 append_ll(&config->post_up_cmds, cg);
             }
-            i += t[i+1].size + 1;
+            i += tok[i+1].size + 1;
         }
-        else if(jsoneq(json_string, &t[i], "pre_down_cmds") == 0) 
+        else if(jsoneq(json_string, &tok[i], "pre_down_cmds") == 0) 
         {
             int j;
-            if(t[i+1].type != JSMN_ARRAY) 
+            if(tok[i+1].type != JSMN_ARRAY) 
                 continue;
-            for(j = 0; j < t[i+1].size; j++) 
+            for(j = 0; j < tok[i+1].size; j++) 
             {
-                jsmntok_t *g = &t[i+j+2];
+                jsmntok_t *g = &tok[i+j+2];
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
                 append_ll(&config->pre_down_cmds, cg);
             }
-            i += t[i+1].size + 1;
+            i += tok[i+1].size + 1;
         } 
-        else if(jsoneq(json_string, &t[i], "post_down_cmds") == 0) 
+        else if(jsoneq(json_string, &tok[i], "post_down_cmds") == 0) 
         {
             int j;
-            if(t[i+1].type != JSMN_ARRAY)
+            if(tok[i+1].type != JSMN_ARRAY)
                 continue;
-            for(j = 0; j < t[i+1].size; j++) 
+            for(j = 0; j < tok[i+1].size; j++) 
             {
-                jsmntok_t *g = &t[i+j+2];
+                jsmntok_t *g = &tok[i+j+2];
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
                 append_ll(&config->post_down_cmds, cg);
             }
-            i += t[i+1].size + 1;
+            i += tok[i+1].size + 1;
+        }
+        else if(jsoneq(json_string, &tok[i], "chnroute") == 0) 
+        {
+            jsmntok_t *sub_tok = &tok[i+1];
+            if(sub_tok[0].type != JSMN_OBJECT)
+                continue;
+
+            config->chnroute = (chnroute_t *)malloc(sizeof(chnroute_t));
+
+            int left = tok_nr - (i+1);
+            int j;
+            int sub_tok_nr = 0;
+            for(j = 1; j < left && sub_tok[j].end < sub_tok[0].end; j++) 
+            {
+                jsmntok_t *t = &sub_tok[j+1];
+                char * start_t = json_string + t->start;
+                int len_t = t->end - t->start;
+                char * cg = strndup(start_t, len_t);
+                
+                if(jsoneq(json_string, &sub_tok[j], "table") == 0)
+                {
+                    config->chnroute->table = cg;
+                    sub_tok_nr++;
+                }
+                else if(jsoneq(json_string, &sub_tok[j], "gateway") == 0)
+                {
+                    config->chnroute->gateway = cg;
+                    sub_tok_nr++;
+                }
+                else if(jsoneq(json_string, &sub_tok[j], "data") == 0)
+                {
+                    config->chnroute->data = cg;
+                    sub_tok_nr++;
+                }
+                j++;
+                sub_tok_nr++;
+            }
+            i += sub_tok_nr + 1;
         }
         else 
-            WARNING("Unexpected key: %.*s", t[i].end-t[i].start, json_string + t[i].start);
+            WARNING("Unexpected key: %.*s", tok[i].end-tok[i].start, json_string + tok[i].start);
     }
 
     free(json_string);
-    free(t);
+    free(tok);
 
     return 0;
 }

@@ -148,6 +148,19 @@ int get_ipif_local(uint32_t ip, struct if_info_t *if_list)
     return 0;
 }
 
+int get_strif_local(const char * name, struct if_info_t *if_list)
+{
+    struct if_info_t *p = if_list;
+    while(p)
+    {
+        if(strcmp(p->name, name) == 0)
+            return p->index;
+        p = p->next;
+    }
+
+    return 0;
+}
+
 int get_ipiif(uint32_t ip, struct if_info_t *if_list)
 {
     struct if_info_t *p = if_list;
@@ -372,6 +385,7 @@ uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, struct if_info_t *if_
     //------------===================------------------------
 
 
+    // would it miss the message and block here?
     rtn = recv(rth.fd, rt_req.buf, sizeof(rt_req.buf), 0);
 
     nlp = (struct nlmsghdr *) rt_req.buf;
@@ -417,5 +431,109 @@ uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, struct if_info_t *if_
     else
         return 0;
         //return -(*oif);
+}
+
+/*
+ * action = 0, add
+ * action = 1, del
+*/
+int set_sys_iproute(uint32_t ip_dst, uint32_t mask, uint32_t gateway, int dev, int table, int action)
+{
+    int nlmsg_type = NLMSG_NOOP;
+    if(action == 0)
+        nlmsg_type = RTM_NEWROUTE;
+    else if(action == 1)
+        nlmsg_type = RTM_DELROUTE;
+
+    // buffer to hold the RTNETLINK request
+    struct 
+    {
+        struct nlmsghdr nl;
+        struct rtmsg    rt;
+        char            buf[8192];
+    } rt_req;
+
+    struct rtnl_handle_t rth;
+    struct rtattr *rtap;
+    int rtl;
+
+    rth.fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    bzero(&rth.local, sizeof(rth.local));
+    rth.local.nl_family = AF_NETLINK;
+    rth.local.nl_pid = getpid();
+    rth.local.nl_groups = 0;
+    bind(rth.fd, (struct sockaddr*) &rth.local, sizeof(rth.local));
+
+    bzero(&rt_req, sizeof(rt_req));
+
+    rtl = sizeof(struct rtmsg);
+
+    // add first attrib:
+    // set destination IP addr and increment the RTNETLINK buffer size
+    rtap = (struct rtattr *) rt_req.buf;
+    rtap->rta_type = RTA_DST;
+    rtap->rta_len = sizeof(struct rtattr) + sizeof(ip_dst);
+    memcpy(((char *)rtap) + sizeof(struct rtattr), &ip_dst, sizeof(ip_dst));
+    rtl += rtap->rta_len;
+
+    // add second attrib:
+    // set oif index and increment the size
+    rtap = (struct rtattr *) (((char *)rtap) + rtap->rta_len);
+    rtap->rta_type = RTA_OIF;
+    rtap->rta_len = sizeof(struct rtattr) + sizeof(dev);
+    memcpy(((char *)rtap) + sizeof(struct rtattr), &dev, sizeof(dev));
+    rtl += rtap->rta_len;
+
+    rt_req.nl.nlmsg_len = NLMSG_LENGTH(rtl);
+    rt_req.nl.nlmsg_type = nlmsg_type;
+    rt_req.nl.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE;
+
+    // set the routing message header
+    rt_req.rt.rtm_family = AF_INET;
+    rt_req.rt.rtm_table = table;
+    // rt_req.rt.rtm_table = 0;
+
+    rt_req.rt.rtm_protocol = RTPROT_STATIC;
+    rt_req.rt.rtm_scope = RT_SCOPE_UNIVERSE;
+    rt_req.rt.rtm_type = RTN_UNICAST;
+    // set the network prefix size
+    rt_req.rt.rtm_dst_len = mask;
+
+    //send msg
+    struct msghdr msg;
+    struct iovec iov;
+
+    bzero(&rth.peer, sizeof(rth.peer));
+    rth.peer.nl_family = AF_NETLINK;
+
+    // initialize & create the struct msghdr supplied to the sendmsg() function
+    bzero(&msg, sizeof(msg));
+    msg.msg_name = (void *) &rth.peer;
+    msg.msg_namelen = sizeof(rth.peer);
+
+    // place the pointer & size of the RTNETLINK message in the struct msghdr
+    iov.iov_base = (void *) &rt_req;
+    iov.iov_len = rt_req.nl.nlmsg_len;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+
+    // send the RTNETLINK message to kernel
+    sendmsg(rth.fd, &msg, 0);
+
+    close(rth.fd);
+ 
+    return 0;
+}
+
+
+int add_sys_iproute(uint32_t ip_dst, uint32_t mask, uint32_t gateway, int dev, int table)
+{
+    return set_sys_iproute(ip_dst, mask, gateway, dev, table, 0);
+}
+
+
+int del_sys_iproute(uint32_t ip_dst, uint32_t mask, uint32_t gateway, int dev, int table)
+{
+    return set_sys_iproute(ip_dst, mask, gateway, dev, table, 1);
 }
 

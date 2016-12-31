@@ -23,26 +23,27 @@
 
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "2.8"
+#define VERSION         "3.0"
 
 /*
  * Config file path choose order:
  * 1) if user specify the path with -C, this path will be used.
- * 2) if exe is located at `/usr/bin/`, config will be `/etc/alpaca-tunnel.json`.
- * 3) if exe is located at `/usr/local/bin/`, config will be `/usr/local/etc/alpaca-tunnel.json`.
- * 4) config will be at the same path with exe file.
+ * 2) if exe is located at `/usr/bin/`, config will be `/etc/alpaca-tunnel.d/config.json`.
+ * 3) if exe is located at `/usr/local/bin/`, config will be `/usr/local/etc/alpaca-tunnel.d/config.json`.
+ * 4) config will be at the relative path `alpaca-tunnel.d/config.json` to exe file.
  *
  * Secret file path choose order:
  * 1) if user specify the path in json, this path will be used. if this path is a relative path, it's relative to the config json.
- * 2) Otherwise, the secret file MUST be located at the relative path `alpaca-tunnel.d/alpaca-secrets` to the config json, NOT with exe!
+ * 2) Otherwise, the secret file MUST be located at the relative path `./secrets` to the config json, NOT with exe!
 */
 
-#define ABSOLUTE_PATH_TO_JSON        "/etc/alpaca-tunnel.json"
-#define ABSOLUTE_PATH_TO_JSON_LOCAL  "/usr/local/etc/alpaca-tunnel.json"
-#define RELATIVE_PATH_TO_JSON        "alpaca-tunnel.json"
-#define RELATIVE_PATH_TO_SECRETS     "alpaca-tunnel.d/alpaca-secrets"
-#define CONFIG_JSON_NAME             "alpaca-tunnel.json"
-#define SECRET_NAME                  "alpaca-secrets"
+#define ABSOLUTE_PATH_TO_JSON        "/etc/alpaca-tunnel.d/config.json"
+#define ABSOLUTE_PATH_TO_JSON_LOCAL  "/usr/local/etc/alpaca-tunnel.d/config.json"
+#define RELATIVE_PATH_TO_JSON        "alpaca-tunnel.d/config.json"
+#define RELATIVE_PATH_TO_SECRETS     "secrets"
+#define RELATIVE_PATH_TO_ROUTE       "route_data_cidr"
+#define CONFIG_JSON_NAME             "config.json"
+#define SECRET_NAME                  "secrets"
 
 #define PATH_LEN 1024
 
@@ -75,7 +76,7 @@
 #define ACK_FIRST_TIME  10000000
 #define ACK_INTERVAL    50000000
 #define ACK_WRITE_DELAY 100  // ms
-#define UDP_DUP_DELAY   100  // ms
+#define UDP_DUP_DELAY   30  // ms
 
 
 enum {pkt_none, pkt_write, pkt_send} packet_type = pkt_none;
@@ -127,7 +128,8 @@ static struct if_info_t *global_if_list;
 static char global_exe_path[PATH_LEN] = "\0";
 static char global_json_path[PATH_LEN] = "\0";
 static char global_secrets_path[PATH_LEN] = "\0";
-static char global_secrets_dir[PATH_LEN] = "\0";
+static char global_secret_dir[PATH_LEN] = "\0";
+static char global_config_dir[PATH_LEN] = "\0";
 
 enum {mode_none, mode_server, mode_client} global_mode = mode_none;
 static byte global_buf_group_psk[2*AES_TEXT_LEN] = "FUCKnimadeGFW!";
@@ -139,6 +141,7 @@ static int global_trusted_ip_cnt = 0;
 static int global_epoll_fd_recv = 0;
 static int global_epoll_fd_write = 0;
 static prior_q_t global_tick_queue;
+
 
 void* tick_queue(void *arg);
 
@@ -174,6 +177,9 @@ int add_timerfd_epoll(int epfd, uint8_t type, struct ack_info_t * info);
  * if next_hop_id == global_self_id, return 1
 */
 uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src);
+
+int chnroute_add(char * data_path, uint32_t gw_ip, int gw_dev);
+int chnroute_del(char * data_path);
 
 
 int usage(char *pname)
@@ -449,11 +455,13 @@ int main(int argc, char *argv[])
 
     bool start_success = false;
     bool default_route_changed = false;
+    bool chnroute_set = false;
     bool server_ip_route_added = false;
     ll_node_t * local_route_list = NULL;
 
     char default_gw_ip[IP_LEN] = "\0";
-    //char default_gw_dev[IFNAMSIZ] = "\0";
+    char default_gw_dev[IFNAMSIZ] = "\0";
+    char chnroute_path[PATH_LEN] = "\0";
 
     if(init_global_values() != 0)
         goto _END;
@@ -492,6 +500,14 @@ int main(int argc, char *argv[])
         }
     }
 
+    strcpy(global_config_dir, global_json_path);
+    path_len = strlen(global_config_dir);
+    while(global_config_dir[path_len] != '/' && path_len >= 0)
+    {
+        global_config_dir[path_len] = '\0';
+        path_len--;
+    }
+
     if(load_config(global_json_path, &config) != 0)
     {
         ERROR(0, "Load config failed.");
@@ -523,8 +539,7 @@ int main(int argc, char *argv[])
         bool default_route_up = false;
         for(int i = 0; i < 10; ++i)
         {
-            get_default_route(default_gw_ip, NULL);
-            if(default_gw_ip[0] != '\0')
+            if(get_default_route(default_gw_ip, default_gw_dev) == 0)
             {
                 default_route_up = true;
                 break;
@@ -581,16 +596,18 @@ int main(int argc, char *argv[])
         goto _END;
     }
 
-    strcpy(global_secrets_dir, global_secrets_path);
-    path_len = strlen(global_secrets_dir);
-    while(global_secrets_dir[path_len] != '/' && path_len >= 0)
+    strcpy(global_secret_dir, global_secrets_path);
+    path_len = strlen(global_secret_dir);
+    while(global_secret_dir[path_len] != '/' && path_len >= 0)
     {
-        global_secrets_dir[path_len] = '\0';
+        global_secret_dir[path_len] = '\0';
         path_len--;
     }
 
-    INFO("%s", global_json_path);
-    INFO("%s", global_secrets_path);
+    DEBUG("config_dir: %s", global_config_dir);
+    INFO("json_path: %s", global_json_path);
+    DEBUG("secret_dir: %s", global_secret_dir);
+    INFO("secrets_path: %s", global_secrets_path);
     
 
 /******************* load secret file *******************/
@@ -704,15 +721,47 @@ int main(int argc, char *argv[])
 
     enable_ip_forward();
 
+    if(config.chnroute)
+    {
+        if(config.chnroute->data == NULL)
+        {
+            strcpy(chnroute_path, global_config_dir);
+            strcat(chnroute_path, RELATIVE_PATH_TO_ROUTE);
+        }
+        else if(config.chnroute->data[0] == '/')
+            strcpy(chnroute_path, config.chnroute->data);
+        else
+        {
+            strcpy(chnroute_path, global_config_dir);
+            strcat(chnroute_path, config.chnroute->data);
+        }
+
+        uint32_t gw_ip = 0;
+        uint32_t gw_dev = 0;
+        if(default_gw_ip[0] != '\0')
+            inet_pton(AF_INET, default_gw_ip, &gw_ip);
+        if(default_gw_dev[0] != '\0')
+            gw_dev = get_strif_local(default_gw_dev, global_if_list);
+
+        if(config.chnroute->gateway == NULL || strcmp(config.chnroute->gateway, "default") == 0)
+            ;
+        else
+            inet_pton(AF_INET, config.chnroute->gateway, &gw_ip);
+
+        if(chnroute_add(chnroute_path, gw_ip, gw_dev) == 0)
+            chnroute_set = true;
+    }
+
+
     // setup route
     if(global_mode == mode_client)
     {
-        char gw_ip[IP_LEN];
-        sprintf(gw_ip, "%s.%s", config.net, config.gateway);
+        char gw_ip_str[IP_LEN];
+        sprintf(gw_ip_str, "%s.%s", config.net, config.gateway);
     
-        if(default_gw_ip[0] != '\0')
+        if(default_gw_ip[0] != '\0' || default_gw_dev[0] != '\0')
         {
-            change_default_route(gw_ip);
+            change_default_route(gw_ip_str, NULL);
             default_route_changed = true;
         }
 
@@ -724,14 +773,14 @@ int main(int argc, char *argv[])
                 struct in_addr in;
                 in.s_addr = peer_table[i]->peeraddr->sin_addr.s_addr;
                 char * server_ip_str = inet_ntoa(in);
-                add_iproute(server_ip_str, default_gw_ip, "default");
+                add_iproute(server_ip_str, default_gw_ip, default_gw_dev, "default");
             }
         }
 
         char * local_route;
         while( (local_route = shift_ll(&config.local_routes) ) != NULL)
         {
-            add_iproute(local_route, default_gw_ip, "default");
+            add_iproute(local_route, default_gw_ip, default_gw_dev, "default");
             append_ll(&local_route_list, local_route);
         }
     }
@@ -856,7 +905,7 @@ _END:
     if(global_mode == mode_client)
     {
         if(default_route_changed)
-            restore_default_route(default_gw_ip);
+            restore_default_route(default_gw_ip, default_gw_dev);
 
         for(int i = 0; i < MAX_ID+1; i++)
             if(server_ip_route_added && peer_table != NULL && peer_table[i] != NULL && peer_table[i]->peeraddr != NULL && peer_table[i]->peeraddr->sin_addr.s_addr != 0)
@@ -871,6 +920,9 @@ _END:
         while( (local_route = shift_ll(&local_route_list) ) != NULL)
             del_iproute(local_route, "default");
     }
+
+    if(chnroute_set == true)
+        chnroute_del(chnroute_path);
 
     if(global_mode == mode_server)
     {
@@ -927,6 +979,78 @@ void sig_handler(int signum)
     global_running = 0;
 }
 
+
+int chnroute(char * data_path, uint32_t gw_ip, int gw_dev, int action)
+{
+    if(access(data_path, R_OK) == -1)
+    {
+        ERROR(errno, "cann't read route data: %s", data_path);
+        return -1;
+    }
+    
+    FILE *chnroute_file = NULL;
+    if((chnroute_file = fopen(data_path, "r")) == NULL)
+    {
+        ERROR(errno, "open file: %s", data_path);
+        return -1;
+    }
+    
+    INFO("route_data: %s", data_path);
+    INFO("start chnroute");
+    
+    int i = 1;
+    size_t len = 1024;
+    char *line = (char *)malloc(len);
+    while(-1 != getline(&line, &len, chnroute_file))
+    {
+        char *ip_str = NULL;
+        char *mask_str = NULL;
+        ip_str = strtok(line, "/");
+        mask_str = strtok(NULL, "/");
+        
+        int mask = 0;
+        if(mask_str != NULL)
+            mask = atoi(mask_str);
+    
+        if(mask < 1)
+        {
+            WARNING("line %d, mask may be wrong or too small: %s", i, mask_str);
+            continue;
+        }
+        else
+        {
+            uint32_t ip_dst_tmp;
+            if(inet_pton(AF_INET, ip_str, &ip_dst_tmp) == 1)
+            {
+                if(action == 0)
+                    add_sys_iproute(ip_dst_tmp, mask, gw_ip, gw_dev, RT_TABLE_DEFAULT);
+                else if(action == 1)
+                    del_sys_iproute(ip_dst_tmp, mask, gw_ip, gw_dev, RT_TABLE_DEFAULT);
+                else
+                    WARNING("chnroute action not supported: %d", action);
+            }
+            else
+                WARNING("line %d, IP may be wrong: %s", i, ip_str);
+        }
+        i++;
+    }
+    free(line);
+    fclose(chnroute_file);
+    
+    INFO("end chnroute");
+
+    return 0;
+}
+
+int chnroute_add(char * data_path, uint32_t gw_ip, int gw_dev)
+{
+    return chnroute(data_path, gw_ip, gw_dev, 0);
+}
+
+int chnroute_del(char * data_path)
+{
+    return chnroute(data_path, 0, 0, 1);
+}
 
 uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src)
 {
@@ -1105,7 +1229,7 @@ void* watch_secret(void *arg)
         return NULL;
     }
 
-    wd = inotify_add_watch(fd, global_secrets_dir, IN_MODIFY | IN_CREATE | IN_DELETE);
+    wd = inotify_add_watch(fd, global_secret_dir, IN_MODIFY | IN_CREATE | IN_DELETE);
     while(global_running)
     {
         int i = 0;
@@ -1309,7 +1433,7 @@ void* server_reset_stat(void *arg)
 
 bool should_pkt_dup(struct peer_profile_t * p, byte* ip_load)
 {
-    return true;
+    // return true;
 
     if(p == NULL || p->tcp_info == NULL)
         return false;

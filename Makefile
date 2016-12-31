@@ -8,32 +8,28 @@ clean:
 	rm -f alpaca-tunnel
 
 install:
+	mkdir -p /usr/local/etc/alpaca-tunnel.d
+	cp -n alpaca-tunnel.d/* /usr/local/etc/alpaca-tunnel.d/
+	chown root:root /usr/local/etc/alpaca-tunnel.d/secrets
+	chmod 600 /usr/local/etc/alpaca-tunnel.d/secrets
+
 	mkdir -p /usr/local/bin
 	cp -n alpaca-tunnel /usr/local/bin/
-
-	mkdir -p /usr/local/etc/alpaca-tunnel.d
-	cp -n alpaca-tunnel.json /usr/local/etc/
-	cp -n alpaca-tunnel.d/* /usr/local/etc/alpaca-tunnel.d/
-	chown root:root /usr/local/etc/alpaca-tunnel.d/alpaca-secrets
-	chmod 600 /usr/local/etc/alpaca-tunnel.d/alpaca-secrets
-
 	cp -n alpaca-tunnel.service /etc/systemd/system/
 	systemctl enable alpaca-tunnel.service
 
 uninstall:
 	systemctl disable alpaca-tunnel.service || :
 	rm -f /etc/systemd/system/alpaca-tunnel.service
-
 	rm -f /usr/local/bin/alpaca-tunnel
 
 purge:
 	systemctl disable alpaca-tunnel.service || :
 	rm -f /etc/systemd/system/alpaca-tunnel.service
-
 	rm -f /usr/local/bin/alpaca-tunnel
-	rm -f /usr/local/etc/alpaca-tunnel.json
 
-	rm -f /usr/local/etc/alpaca-tunnel.d/alpaca-secrets
+	rm -f /usr/local/etc/alpaca-tunnel.d/config.json
+	rm -f /usr/local/etc/alpaca-tunnel.d/secrets
 	rm -f /usr/local/etc/alpaca-tunnel.d/chnroute.sh
 	rm -f /usr/local/etc/alpaca-tunnel.d/route_data_cidr
 	rmdir /usr/local/etc/alpaca-tunnel.d/

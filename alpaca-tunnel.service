@@ -3,7 +3,7 @@ Description=alpaca-tunnel
 After=network.target network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/alpaca-tunnel -c /usr/local/etc/alpaca-tunnel.json
+ExecStart=/usr/local/bin/alpaca-tunnel -c /usr/local/etc/alpaca-tunnel.d/config.json
 Restart=always
 
 [Install]

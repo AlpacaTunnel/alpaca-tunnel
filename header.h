@@ -9,6 +9,8 @@
 #define HEAD_MORE_TRUE  1
 #define HEAD_TYPE_DATA  0
 #define HEAD_TYPE_MSG   1
+#define HEAD_TYPE_DUP   2
+#define HEAD_TYPE_RETR  3
 #define HEAD_FRAG_FALSE 0
 #define HEAD_FRAG_TRUE  1
 

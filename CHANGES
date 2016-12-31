@@ -1,10 +1,31 @@
 Todo list:
 1. multi-user ---- done
-2. tcp optimization ---- done
+2. tcp optimization
 3. anti-replay ----done
 4. obfuscation
 5. android/iOS
 6. IPv6
+
+
+3.0 2016-12-31
+- set route with rtnetlink to speed up chnroute
+- change all configure files to alpaca-tunnel.d
+
+
+2.8 2016-11-30
+- dup send pkt with a delay
+
+
+2.7 2016-11-20
+- don't send last recived ack
+
+
+2.6 2016-11-19
+- fix bug when retrans packets
+
+
+2.5 2016-11-12
+- migrate to systemd
 
 
 2.4.4 2016-05-15

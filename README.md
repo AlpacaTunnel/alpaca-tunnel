@@ -21,9 +21,9 @@ Download the codes and build.
 Configuration
 -------------
 
-- Conf files are stored in `/usr/local/etc` by default.
-- Edit Mode/ID in `alpaca-tunnel.json`.
-- Edit server addresses and passwords in `alpaca-secrets`.
+- Conf files are stored in `/usr/local/etc/alpaca-tunnel.d/` by default.
+- Edit Mode/ID in `config.json`.
+- Edit server addresses and passwords in `secrets`.
 
 alpaca-tunnel supports multiple clients with one server instance. Each server
 or client has an unique ID, such as 1.1 or 16.4. The format of the ID is just
@@ -31,6 +31,9 @@ like the format of one half of an IP address. Note that you must allocate
 smaller IDs for servers, bigger IDs for clients.
 
 Servers and clients must have the same GROUP name.
+
+The shell version of chnroute is too slow, so I write a C version. Edit chnroute object
+in the json to use it.
 
 
 Usage
@@ -83,8 +86,9 @@ refer to <https://github.com/zserge/jsmn>.
 Bugs and Issues
 ----------------
 
-
-
+1. inner app chnoute don't work when the default route has no ip address.
+2. edit secrets on fly may cause restart or 100% CPU usage. better restart after edit the secrets.
+3. some other thing may cause 100% CPU usage, don't know the reason yet.
 
 
 

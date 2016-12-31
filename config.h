@@ -16,6 +16,15 @@
 #define TUN_MTU 1440
 #define TUN_MTU_MIN 68
 
+
+typedef struct
+{
+    char * table;
+    char * gateway;
+    char * data;
+} chnroute_t;
+
+
 struct config_t
 {
     char * mode;  // server/client
@@ -27,8 +36,9 @@ struct config_t
     int mtu;
     char * log_level;
     char * secret_file;
-    ll_node_t * use_dns;  // a list of dns servers, not used now
+    chnroute_t * chnroute;
     ll_node_t * local_routes;   // a list of networks or hosts
+    ll_node_t * use_dns;  // a list of dns servers, not used now
     ll_node_t * pre_up_cmds;
     ll_node_t * post_up_cmds;
     ll_node_t * pre_down_cmds;
