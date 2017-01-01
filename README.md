@@ -86,9 +86,8 @@ refer to <https://github.com/zserge/jsmn>.
 Bugs and Issues
 ----------------
 
-1. inner app chnoute don't work when the default route has no ip address.
-2. edit secrets on fly may cause restart or 100% CPU usage. better restart after edit the secrets.
-3. some other thing may cause 100% CPU usage, don't know the reason yet.
+1. edit secrets on fly may cause restart or 100% CPU usage. better restart after edit the secrets.
+2. some other thing may cause 100% CPU usage, don't know the reason yet.
 
 
 

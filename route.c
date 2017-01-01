@@ -439,6 +439,9 @@ uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, struct if_info_t *if_
 */
 int set_sys_iproute(uint32_t ip_dst, uint32_t mask, uint32_t gateway, int dev, int table, int action)
 {
+    if(action == 0 && gateway == 0 && dev == 0)
+        return -1;
+
     int nlmsg_type = NLMSG_NOOP;
     if(action == 0)
         nlmsg_type = RTM_NEWROUTE;
@@ -476,12 +479,18 @@ int set_sys_iproute(uint32_t ip_dst, uint32_t mask, uint32_t gateway, int dev, i
     memcpy(((char *)rtap) + sizeof(struct rtattr), &ip_dst, sizeof(ip_dst));
     rtl += rtap->rta_len;
 
-    // add second attrib:
-    // set oif index and increment the size
+    // add second attrib: set oif index
     rtap = (struct rtattr *) (((char *)rtap) + rtap->rta_len);
     rtap->rta_type = RTA_OIF;
     rtap->rta_len = sizeof(struct rtattr) + sizeof(dev);
     memcpy(((char *)rtap) + sizeof(struct rtattr), &dev, sizeof(dev));
+    rtl += rtap->rta_len;
+
+    // add third attrib: set gateway
+    rtap = (struct rtattr *) (((char *)rtap) + rtap->rta_len);
+    rtap->rta_type = RTA_GATEWAY;
+    rtap->rta_len = sizeof(struct rtattr) + sizeof(gateway);
+    memcpy(((char *)rtap) + sizeof(struct rtattr), &gateway, sizeof(gateway));
     rtl += rtap->rta_len;
 
     rt_req.nl.nlmsg_len = NLMSG_LENGTH(rtl);

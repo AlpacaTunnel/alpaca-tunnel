@@ -7,6 +7,10 @@ Todo list:
 6. IPv6
 
 
+3.0.1 2017-01-01
+- fix bug of chnroute
+
+
 3.0 2016-12-31
 - set route with rtnetlink to speed up chnroute
 - change all configure files to alpaca-tunnel.d

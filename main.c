@@ -23,7 +23,7 @@
 
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "3.0"
+#define VERSION         "3.0.1"
 
 /*
  * Config file path choose order:
