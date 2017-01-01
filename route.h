@@ -87,11 +87,10 @@ int get_strif_local(const char * name, struct if_info_t *if_list);
 
 //return gateway or 0
 uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, struct if_info_t *if_list);
-
 int add_sys_iproute(uint32_t ip_dst, uint32_t mask, uint32_t gateway, int dev, int table);
-
 int del_sys_iproute(uint32_t ip_dst, uint32_t mask, uint32_t gateway, int dev, int table);
-// int del_sys_iproute(uint32_t ip_dst, uint32_t mask, uint32_t gateway, int dev, int table);
 
+// return the number in /etc/iproute2/rt_tables
+int get_rt_table(const char * table);
 
 #endif

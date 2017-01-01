@@ -467,6 +467,10 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
     return 0;
 }
 
+
+/*
+* replace all white-space characters to spaces, remove all characters after '#'
+*/
 int shrink_line(char *line)
 {
     int n = strlen(line);

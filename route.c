@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <ifaddrs.h>
+#include <ctype.h>
 
 #include "route.h"
 #include "log.h"
@@ -544,5 +545,63 @@ int add_sys_iproute(uint32_t ip_dst, uint32_t mask, uint32_t gateway, int dev, i
 int del_sys_iproute(uint32_t ip_dst, uint32_t mask, uint32_t gateway, int dev, int table)
 {
     return set_sys_iproute(ip_dst, mask, gateway, dev, table, 1);
+}
+
+
+/*
+* replace all white-space characters to spaces, remove all characters after '#'
+*/
+int route_shrink_line(char *line)
+{
+    int n = strlen(line);
+    int i;
+    for(i=0; i<n; i++)
+        if(isspace(line[i]))
+            line[i] = ' ';
+        else if('#' == line[i])
+            for( ; i<n; i++)
+                line[i] = '\0';
+    return strlen(line);
+}
+
+int get_rt_table(const char * table)
+{
+    if(table == NULL)
+        return 0;
+    
+    FILE *tb_file = NULL;
+    if((tb_file = fopen("/etc/iproute2/rt_tables", "r")) == NULL)
+    {
+        ERROR(errno, "open file: /etc/iproute2/rt_tables");
+        return 0;
+    }
+
+    int index = 0;
+    size_t len = 1024;
+    char *line = (char *)malloc(len);
+    while(-1 != getline(&line, &len, tb_file))
+    {
+        char * index_str = NULL;
+        char *name = NULL;
+
+        if(route_shrink_line(line) <= 1)
+            continue;
+        
+        index_str = strtok(line, " ");
+        name = strtok(NULL, " ");
+
+        if(name == NULL)
+            continue;
+
+        if(strcmp(name, table) == 0)
+        {
+            index = atoi(index_str);
+            break;
+        }
+    }
+    free(line);
+    fclose(tb_file);
+
+    return index;
 }
 

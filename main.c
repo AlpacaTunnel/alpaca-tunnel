@@ -23,7 +23,7 @@
 
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "3.0.1"
+#define VERSION         "3.0.2"
 
 /*
  * Config file path choose order:
@@ -178,8 +178,8 @@ int add_timerfd_epoll(int epfd, uint8_t type, struct ack_info_t * info);
 */
 uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src);
 
-int chnroute_add(char * data_path, uint32_t gw_ip, int gw_dev);
-int chnroute_del(char * data_path);
+int chnroute_add(char * data_path, uint32_t gw_ip, int table, int gw_dev);
+int chnroute_del(char * data_path, int table);
 
 
 int usage(char *pname)
@@ -462,6 +462,7 @@ int main(int argc, char *argv[])
     char default_gw_ip[IP_LEN] = "\0";
     char default_gw_dev[IFNAMSIZ] = "\0";
     char chnroute_path[PATH_LEN] = "\0";
+    int chnroute_table = 0;
 
     if(init_global_values() != 0)
         goto _END;
@@ -736,8 +737,16 @@ int main(int argc, char *argv[])
             strcat(chnroute_path, config.chnroute->data);
         }
 
+
         uint32_t gw_ip = 0;
-        uint32_t gw_dev = 0;
+        int gw_dev = 0;
+        chnroute_table = get_rt_table(config.chnroute->table);
+        if(chnroute_table == 0)
+        {
+            chnroute_table = RT_TABLE_DEFAULT;
+            WARNING("will use table default %d for chnroute.", chnroute_table);
+        }
+
         if(default_gw_ip[0] != '\0')
             inet_pton(AF_INET, default_gw_ip, &gw_ip);
         if(default_gw_dev[0] != '\0')
@@ -748,10 +757,9 @@ int main(int argc, char *argv[])
         else
             inet_pton(AF_INET, config.chnroute->gateway, &gw_ip);
 
-        if(chnroute_add(chnroute_path, gw_ip, gw_dev) == 0)
+        if(chnroute_add(chnroute_path, gw_ip, chnroute_table, gw_dev) == 0)
             chnroute_set = true;
     }
-
 
     // setup route
     if(global_mode == mode_client)
@@ -922,7 +930,7 @@ _END:
     }
 
     if(chnroute_set == true)
-        chnroute_del(chnroute_path);
+        chnroute_del(chnroute_path, chnroute_table);
 
     if(global_mode == mode_server)
     {
@@ -980,7 +988,7 @@ void sig_handler(int signum)
 }
 
 
-int chnroute(char * data_path, uint32_t gw_ip, int gw_dev, int action)
+int chnroute(char * data_path, uint32_t gw_ip, int gw_dev, int table, int action)
 {
     if(access(data_path, R_OK) == -1)
     {
@@ -1023,9 +1031,9 @@ int chnroute(char * data_path, uint32_t gw_ip, int gw_dev, int action)
             if(inet_pton(AF_INET, ip_str, &ip_dst_tmp) == 1)
             {
                 if(action == 0)
-                    add_sys_iproute(ip_dst_tmp, mask, gw_ip, gw_dev, RT_TABLE_DEFAULT);
+                    add_sys_iproute(ip_dst_tmp, mask, gw_ip, gw_dev, table);
                 else if(action == 1)
-                    del_sys_iproute(ip_dst_tmp, mask, gw_ip, gw_dev, RT_TABLE_DEFAULT);
+                    del_sys_iproute(ip_dst_tmp, mask, gw_ip, gw_dev, table);
                 else
                     WARNING("chnroute action not supported: %d", action);
             }
@@ -1042,14 +1050,14 @@ int chnroute(char * data_path, uint32_t gw_ip, int gw_dev, int action)
     return 0;
 }
 
-int chnroute_add(char * data_path, uint32_t gw_ip, int gw_dev)
+int chnroute_add(char * data_path, uint32_t gw_ip, int table, int gw_dev)
 {
-    return chnroute(data_path, gw_ip, gw_dev, 0);
+    return chnroute(data_path, gw_ip, gw_dev, table, 0);
 }
 
-int chnroute_del(char * data_path)
+int chnroute_del(char * data_path, int table)
 {
-    return chnroute(data_path, 0, 0, 1);
+    return chnroute(data_path, 0, 0, table, 1);
 }
 
 uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src)
