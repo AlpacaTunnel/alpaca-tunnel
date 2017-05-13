@@ -7,8 +7,6 @@
 #include "bool.h"
 
 
-
-
 typedef struct 
 {
     bool running;

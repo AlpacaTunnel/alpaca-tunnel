@@ -27,30 +27,6 @@ struct flow_profile_t
     struct bit_array_t * ba_now;
 };
 
-//ack info for every pkt
-struct ack_info_t
-{
-    uint8_t type;  //mid lost or last recived
-    uint8_t cnt;  //ack msg send cnt
-    uint16_t src_id;
-    uint16_t dst_id;
-    uint32_t timestamp;
-    uint32_t seq;
-    int fd;
-};
-
-struct timerfd_info_t
-{
-    int fd_max_cnt; //max number of allowed timefd to create, avoid too many timerfd open, and also avoid sending too many msg when network is congested.  
-    uint32_t time_pre;
-    uint32_t time_now;
-    uint32_t max_ack_pre;
-    uint32_t max_ack_now;
-    uint32_t ack_array_size;   //size of the following array, should eq to max pkt seq(SEQ_LEVEL_1)
-    struct ack_info_t * ack_array_pre;  //array that stores all timerfd of pre second, for each pkt, there is an ack_info_t
-    struct ack_info_t * ack_array_now;  //array that stores all timerfd of the latest second
-};
-
 //data struct of peers in memory.
 struct peer_profile_t
 {
@@ -64,7 +40,6 @@ struct peer_profile_t
     uint32_t local_seq;
     uint32_t * pkt_index_array_pre;  //store the indexes of sent packets in global buf
     uint32_t * pkt_index_array_now;
-    struct timerfd_info_t * timerfd_info;
     struct tcp_info_t * tcp_info;
     int tcp_cnt;
     struct flow_profile_t * flow_src;
@@ -81,7 +56,6 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
 int destroy_peer_table(struct peer_profile_t **peer_table, int max_id);
 struct peer_profile_t* add_peer();
 int delete_peer(struct peer_profile_t* p);
-int close_all_timerfd(struct ack_info_t timerfd[], int num);
 
 int shrink_line(char *line);
 

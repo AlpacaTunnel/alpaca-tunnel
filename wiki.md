@@ -62,7 +62,14 @@ DESIGN
     tunnel and speed up the TCP.
 
     But Google then published their BBR algorithm. It's really fast, and it don't sensitive to delay.
-    So I think there is no need to implement the TCP optimization again. Use BBR inside the tunnel.
+    So I think there is no need to implement the TCP optimization again. Use BBR inside the tunnel. For
+    example a socks5 proxy or http proxy, or even a TCP based VPN tunnel.
+
+    Since retrans is unnecessary, I removed it. Actually in my experience, I found dup send the
+    packets with a delay can bring more throughput. Why with a delay? To make two packets less relevant.
+    Send packets with two different paths should have the same effect.
+
+    Waste a half bandwidth to get a higher throughput, choose your own way.
 
 
 #### 5. File path:

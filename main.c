@@ -23,7 +23,7 @@
 
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "3.0.2"
+#define VERSION         "3.1"
 
 /*
  * Config file path choose order:
@@ -138,8 +138,7 @@ static uint32_t global_local_time;
 //static uint32_t global_local_seq;
 static int64_t* global_trusted_ip = NULL;  // int64_t can hold uint32_t(IPv4 address)
 static int global_trusted_ip_cnt = 0;
-static int global_epoll_fd_recv = 0;
-static int global_epoll_fd_write = 0;
+
 static prior_q_t global_tick_queue;
 
 
@@ -153,7 +152,6 @@ void* server_read(void *arg);
 void* server_recv(void *arg);
 void* server_write(void *arg);
 void* server_send(void *arg);
-void* watch_timer_recv(void *arg);
 
 void* server_reset_stat(void *arg);
 void* watch_link_route(void *arg);
@@ -166,8 +164,6 @@ int init_global_values();
 int usage(char *pname);
 void sig_handler(int signum);
 int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, struct peer_profile_t ** peer_table);
-int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, struct peer_profile_t ** peer_table);
-int add_timerfd_epoll(int epfd, uint8_t type, struct ack_info_t * info);
 
 /* get next hop id form route_table or system route table
  * return value:
@@ -250,20 +246,6 @@ int init_global_values()
     if(pthread_cond_init(&global_send_cond, NULL) != 0)
     {
         ERROR(errno, "pthread_cond_init");
-        return -1;
-    }
-
-    global_epoll_fd_recv = epoll_create(1);
-    if(global_epoll_fd_recv == -1)
-    {
-        ERROR(errno, "epoll_create");
-        return -1;
-    }
-
-    global_epoll_fd_write = epoll_create(1);
-    if(global_epoll_fd_write == -1)
-    {
-        ERROR(errno, "epoll_create");
         return -1;
     }
 
@@ -371,8 +353,7 @@ int destory_global_values()
     pthread_mutex_destroy(&global_send_mutex);
     pthread_cond_destroy(&global_write_cond);
     pthread_cond_destroy(&global_send_cond);
-    close(global_epoll_fd_recv);
-    close(global_epoll_fd_write);
+
     pq_destory(&global_tick_queue);
 
     if(global_write_buf != NULL)
@@ -807,8 +788,8 @@ int main(int argc, char *argv[])
 
     global_running = 1;
 
-    int rc1=0, rc2=0, rc3=0, rc4=0, rc5=0, rc6=0, rc7=0, rc8=0, rc9=0, rc10=0, rc11=0;
-    pthread_t tid1=0, tid2=0, tid3=0, tid4=0, tid5=0, tid6=0, tid7=0, tid8=0, tid9=0, tid10=0, tid11=0;
+    int rc1=0, rc2=0, rc3=0, rc4=0, rc5=0, rc6=0, rc7=0, rc8=0, rc9=0, rc11=0;
+    pthread_t tid1=0, tid2=0, tid3=0, tid4=0, tid5=0, tid6=0, tid7=0, tid8=0, tid9=0, tid11=0;
 
     if( (rc1 = pthread_create(&tid1, NULL, server_recv, peer_table)) != 0 )
     {
@@ -856,11 +837,6 @@ int main(int argc, char *argv[])
         ERROR(errno, "pthread_error: create rc9"); 
         goto _END;
     }
-    if( (rc10 = pthread_create(&tid10, NULL, watch_timer_recv, peer_table)) != 0 )
-    {
-        ERROR(errno, "pthread_error: create rc10"); 
-        goto _END;
-    }
 
     if( (rc11 = pthread_create(&tid11, NULL, tick_queue, NULL)) != 0 )
     {
@@ -897,7 +873,6 @@ int main(int argc, char *argv[])
     pthread_cancel(tid7);
     pthread_cancel(tid8);
     pthread_cancel(tid9);
-    pthread_cancel(tid10);
     pthread_cancel(tid11);
 
     // what happens to a locked lock when cancel the thread?
@@ -1839,120 +1814,11 @@ void* server_write(void *arg)
     return NULL;
 }
 
-void* watch_timer_recv(void *arg)
-{
-    pthread_cleanup_push(clean_lock_all, NULL);
-    struct peer_profile_t ** peer_table = (struct peer_profile_t **)arg;
-    struct epoll_event * evs = NULL;
-    evs = calloc(EPOLL_MAXEVENTS, sizeof(struct epoll_event));
-    uint64_t read_buf;
-    uint16_t len_load, nr_aes_block, bigger_id;
-    struct tunnel_header_t header_send;
-    struct ack_msg_t ack_msg;
-    byte * buf_load = (byte *)malloc(TUN_MTU);
-    byte * buf_send = (byte *)malloc(ETH_MTU);
-    byte buf_header[HEADER_LEN];
-    byte * buf_psk;
-    int i;
-    for(i=0; i<ETH_MTU; i++)   //set random padding data
-        buf_send[i] = random();
-    bzero(buf_load, TUN_MTU);
-
-    while(global_running)
-    {
-        int n = epoll_wait(global_epoll_fd_recv, evs, EPOLL_MAXEVENTS, -1);
-        if(n == -1)
-        {
-            ERROR(errno, "epoll_wait");
-            continue;
-        }
-        
-        int i;
-        for(i = 0; i < n; i++)
-        {
-            struct ack_info_t * ai = (struct ack_info_t *)(evs[i].data.ptr);
-            uint16_t ack_id = ai->src_id;
-            if(read(ai->fd, &read_buf, sizeof(uint64_t)) < 0)
-                continue;
-
-            //to do:
-            //for HEAD_TYPE_MSG packets, haven't assigned a seq number. this may be a weakness.
-            //or use msg_seq/data_seq instead of local_seq.
-
-            uint32_t now = time(NULL);
-            header_send.time = htonl(now);
-            header_send.seq_frag_off.bit.seq = 0;
-            header_send.seq_frag_off.bit.frag = 0;
-            header_send.seq_frag_off.bit.off = 0;
-            header_send.seq_frag_off.u32 = htonl(header_send.seq_frag_off.u32);
-
-            len_load = sizeof(struct ack_msg_t);
-            header_send.m_type_len.bit.m = HEAD_MORE_FALSE;
-            header_send.m_type_len.bit.type = HEAD_TYPE_MSG;
-            header_send.m_type_len.bit.len = len_load;
-            header_send.m_type_len.u16 = htons(header_send.m_type_len.u16);
-            header_send.ttl_flag_random.bit.ttl = TTL_MIN;
-            header_send.ttl_flag_random.bit.random = 0;
-            header_send.ttl_flag_random.u16 = htons(header_send.ttl_flag_random.u16);
-            header_send.dst_id = htons(ack_id);
-            header_send.src_id = htons(global_self_id);
-            
-            ack_msg.src_id = htons(ai->src_id);
-            ack_msg.dst_id = htons(ai->dst_id);
-            ack_msg.ack_type = htonl(ai->type);
-            ack_msg.timestamp = htonl(ai->timestamp);
-            ack_msg.seq = ai->seq;
-
-            // DEBUG("send ack %d:%d, type %d", ai->timestamp, ai->seq, ai->type);
-
-            ack_msg.seq = htonl(ack_msg.seq);
-            memcpy(buf_load, &ack_msg, len_load);
-
-            bigger_id = ack_id > global_self_id ? ack_id : global_self_id;
-            if(NULL == peer_table[bigger_id])
-            {
-                DEBUG("tunif %s read ack message to invalid peer: %d.%d!", global_tunif.name, bigger_id/256, bigger_id%256);
-                continue;
-            }
-            buf_psk = peer_table[bigger_id]->psk;
-            memcpy(buf_header, &header_send, HEADER_LEN);
-            encrypt(buf_send, buf_header, global_buf_group_psk, AES_KEY_LEN);  //encrypt header with group PSK
-            encrypt(buf_send+HEADER_LEN, buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
-
-            nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
-            int j;
-            for(j=0; j<nr_aes_block; j++)
-                encrypt(buf_send+HEADER_LEN+ICV_LEN+j*AES_TEXT_LEN, buf_load+j*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
-
-            int len = HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN;
-            //int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
-            int len_pad = 17;  //for debug only
-            if(sendto(global_sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peer_table[ack_id]->peeraddr, sizeof(struct sockaddr)) < 0 )
-                ERROR(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, ack_id/256, ack_id%256);
-
-            if(ai->cnt >= (ACK_NUM-1))
-            {
-                close(ai->fd);
-                ai->fd = 0;
-            }
-            else
-                ai->cnt++;
-        }
-        bzero(evs, n*sizeof(struct epoll_event));
-    }
-
-    free(buf_send);
-    free(buf_load);
-    pthread_cleanup_pop(0);
-    return NULL;
-}
-
 void* server_recv(void *arg)
 {
     pthread_cleanup_push(clean_lock_all, NULL);
     struct tunnel_header_t header_recv, header_send;
     struct peer_profile_t ** peer_table = (struct peer_profile_t **)arg;
-    struct ack_msg_t ack_msg;
     uint16_t next_id = 0;
     uint16_t dst_id = 0;
     uint16_t src_id = 0;
@@ -2041,119 +1907,12 @@ void* server_recv(void *arg)
         type = header_recv.m_type_len.bit.type;
         nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
 
-        if(type == HEAD_TYPE_MSG)
+        if(type != HEAD_TYPE_DATA)
         {
-            if(nr_aes_block > 10)
-            {
-                DEBUG("msg too long, drop it now! will handle it when msg has seq number in header.");
-                continue;
-            }
-            //printf("============== recv msg type\n");
-            for(i=0; i<nr_aes_block; i++)
-                decrypt(buf_load+i*AES_TEXT_LEN, buf_recv+HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
-            memcpy(&ack_msg, buf_load, len_load);
-            ack_msg.src_id = ntohs(ack_msg.src_id);
-            ack_msg.dst_id = ntohs(ack_msg.dst_id);
-            ack_msg.ack_type = ntohl(ack_msg.ack_type);
-            ack_msg.timestamp = ntohl(ack_msg.timestamp);
-            ack_msg.seq = ntohl(ack_msg.seq);
-
-            // DEBUG(">>> recv ack %d:%d, type %d", ack_msg.timestamp, ack_msg.seq, ack_msg.ack_type);
-
-            if(ack_msg.timestamp == global_local_time)
-            {
-                //printf("time == \n");
-            }
-            else if(ack_msg.timestamp == (global_local_time-1))
-            {
-                //printf("time -- \n");
-            }
-            else
-            {
-                //printf("time ------ \n");
-                continue;
-            }
-
-            int max_seq = 0, min_seq = 0;
-            if(ack_msg.ack_type == TIMER_TYPE_LAST)
-            {
-                int after_last_nr = 1;   //may adjust the num.
-                min_seq = ack_msg.seq + 1;
-                max_seq = (ack_msg.seq + after_last_nr) < peer_table[ack_msg.dst_id]->local_seq ? (ack_msg.seq + after_last_nr) : peer_table[ack_msg.dst_id]->local_seq;
-            }
-            else
-            {
-                min_seq = ack_msg.seq;
-                max_seq = ack_msg.seq;
-            }
-            if(max_seq > SEQ_LEVEL_1)
-                continue;
-
-            int seq;
-            for(seq = min_seq; seq <= max_seq; seq++)
-            {
-                uint32_t * pkt_index_array_pre = peer_table[ack_msg.dst_id]->pkt_index_array_pre;
-                uint32_t * pkt_index_array_now = peer_table[ack_msg.dst_id]->pkt_index_array_now;
-                
-                uint32_t buf_index_pre = pkt_index_array_pre[seq];
-                uint32_t buf_index_now = pkt_index_array_now[seq];
-                if(buf_index_pre > SEND_BUF_SIZE || buf_index_now > SEND_BUF_SIZE)
-                {
-                    // DEBUG("buf_index_pre: %d, buf_index_now: %d", buf_index_pre, buf_index_now);
-                    continue;
-                }
-    
-                if(pthread_mutex_lock(&global_send_mutex) != 0)
-                {
-                    ERROR(errno, "pthread_mutex_lock");
-                    ERROR(0, "ignore this ack_msg to dst_id: %d.%d", ack_msg.dst_id/256, ack_msg.dst_id%256);
-                    continue;
-                }
-
-                uint32_t buf_index;
-                if(global_send_buf[buf_index_pre].dst_id == ack_msg.dst_id && 
-                    global_send_buf[buf_index_pre].src_id == ack_msg.src_id &&
-                    global_send_buf[buf_index_pre].timestamp == ack_msg.timestamp &&
-                    global_send_buf[buf_index_pre].seq == seq)
-                {
-                    buf_index = buf_index_pre;
-                }
-                else if(global_send_buf[buf_index_now].dst_id == ack_msg.dst_id && 
-                    global_send_buf[buf_index_now].src_id == ack_msg.src_id &&
-                    global_send_buf[buf_index_now].timestamp == ack_msg.timestamp &&
-                    global_send_buf[buf_index_now].seq == seq)
-                {
-                    buf_index = buf_index_now;
-                }
-                else
-                {
-                    DEBUG("--- retrans packet not found, ack_type: %d", ack_msg.ack_type);
-                    if(pthread_mutex_unlock(&global_send_mutex) != 0)
-                        ERROR(errno, "pthread_mutex_unlock");
-                    continue;  
-                }
-    
-                int sockfd = global_send_buf[buf_index].send_fd;
-                int len = global_send_buf[buf_index].len;
-                dst_id = global_send_buf[buf_index].dst_id;
-                memcpy(peeraddr, global_send_buf[buf_index].dst_addr, sizeof(struct sockaddr_in));
-                memcpy(buf_send, global_send_buf[buf_index].buf_packet, len);
-
-                pthread_cond_signal(&global_send_cond);
-    
-                if(pthread_mutex_unlock(&global_send_mutex) != 0)
-                    ERROR(errno, "pthread_mutex_unlock");
-            
-                // DEBUG("=== resend packet %d:%d", global_send_buf[buf_index].timestamp, global_send_buf[buf_index].seq);
-
-                int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
-                if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
-                    ERROR(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
-            }
-
+            INFO("only HEAD_TYPE_DATA supported!");
             continue;
         }
-        
+
         uint32_t pkt_time = ntohl(header_recv.time);
         header_recv.seq_frag_off.u32 = ntohl(header_recv.seq_frag_off.u32);
         uint32_t pkt_seq = header_recv.seq_frag_off.bit.seq;
@@ -2192,9 +1951,6 @@ void* server_recv(void *arg)
         if(fs < 0)
             continue;
 
-        //todo: do I need to add a lock here?
-        check_timerfd(pkt_time, pkt_seq, src_id, dst_id, peer_table);
-        
         for(i=0; i<nr_aes_block_ipv4_header; i++)
             decrypt(buf_load+i*AES_TEXT_LEN, buf_recv+HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
         
@@ -2429,169 +2185,6 @@ void* server_recv(void *arg)
     return NULL;
 }
 
-int check_timerfd(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, struct peer_profile_t ** peer_table)
-{
-    if(ACK_NUM <= 0)  // don't send any ack msg
-        return 0;
-
-    struct timerfd_info_t * ti = peer_table[src_id]->timerfd_info;
-    struct flow_profile_t * fp = peer_table[src_id]->flow_src;
-    struct bit_array_t * ba = NULL;
-
-    if(pkt_seq >= ti->ack_array_size)
-    {
-        DEBUG("pkt_seq beyond ack_array_size, ignore this packet from %d.%d to %d.%d.", 
-            src_id/256, src_id%256, dst_id/256, dst_id%256);
-        return 0;
-    }
-    
-    int time_diff = pkt_time - ti->time_now;
-    if(time_diff >= 1 || time_diff <= -MAX_DELAY_TIME)
-    {
-        if(time_diff == 1)
-        {
-            close_all_timerfd(ti->ack_array_pre, SEQ_LEVEL_1);  //this function slows down the tunnel from 100% to about 98% bps. don't care it now.
-            struct ack_info_t * tmp_info = ti->ack_array_pre;
-            ti->ack_array_pre = ti->ack_array_now;
-            ti->ack_array_now = tmp_info;
-            ti->max_ack_pre = ti->max_ack_now;
-            ti->max_ack_now = pkt_seq;
-        }
-        else
-        {
-            close_all_timerfd(ti->ack_array_pre, SEQ_LEVEL_1);
-            close_all_timerfd(ti->ack_array_now, SEQ_LEVEL_1);
-            ti->max_ack_pre = 0;
-            ti->max_ack_now = pkt_seq;  //don't set max_ack_now to timer_nr, otherwise fd_max_cnt doesn't make sense.
-        }
-
-        ti->time_now = pkt_time;
-        ti->time_pre = pkt_time - 1;
-        
-        struct ack_info_t * ack_array = ti->ack_array_now;
-        
-        int timer_nr = (pkt_seq < ti->fd_max_cnt) ? pkt_seq : ti->fd_max_cnt;  //only create timer for the first fd_max_cnt pkt, to avoid too many ack msg
-        int i;
-        for(i = 0; i < timer_nr; i++)
-        {
-            ack_array[i].cnt = 0;
-            ack_array[i].src_id = src_id;
-            ack_array[i].dst_id = dst_id;
-            ack_array[i].timestamp = pkt_time;
-            ack_array[i].seq = i;
-            add_timerfd_epoll(global_epoll_fd_recv, TIMER_TYPE_MID, &(ack_array[i]));
-        }
-
-        ack_array[pkt_seq].cnt = 0;
-        ack_array[pkt_seq].src_id = src_id;
-        ack_array[pkt_seq].dst_id = dst_id;
-        ack_array[pkt_seq].timestamp = pkt_time;
-        ack_array[pkt_seq].seq = pkt_seq;
-        add_timerfd_epoll(global_epoll_fd_recv, TIMER_TYPE_LAST, &(ack_array[pkt_seq]));
-    }
-    else if(time_diff == 0 || time_diff == -1)
-    {
-        uint32_t max_ack_seq = 0;
-        struct ack_info_t * ack_array = NULL;
-        if(time_diff == 0)
-        {
-            ack_array = ti->ack_array_now;
-            max_ack_seq = ti->max_ack_now;
-            if(pkt_seq > max_ack_seq)
-                ti->max_ack_now = pkt_seq;
-            ba = fp->ba_now;
-        }
-        else if(time_diff == -1)
-        {
-            ack_array = ti->ack_array_pre;
-            max_ack_seq = ti->max_ack_pre;
-            if(pkt_seq > max_ack_seq)
-                ti->max_ack_pre = pkt_seq;
-            ba = fp->ba_pre;
-        }
-
-        //if(pkt_seq == max_ack_seq), do nothing.
-        if(pkt_seq < max_ack_seq && ack_array[pkt_seq].fd != 0)
-        {
-            //printf("close: mid %d\n", pkt_seq);
-            close(ack_array[pkt_seq].fd);
-            ack_array[pkt_seq].fd = 0;
-        }
-        else if(pkt_seq > max_ack_seq)
-        {
-            //printf("close: max %d\n", max_ack_seq);
-            close(ack_array[max_ack_seq].fd);
-            ack_array[max_ack_seq].fd = 0;
-
-            ack_array[pkt_seq].cnt = 0;
-            ack_array[pkt_seq].src_id = src_id;
-            ack_array[pkt_seq].dst_id = dst_id;
-            ack_array[pkt_seq].timestamp = pkt_time;
-            ack_array[pkt_seq].seq = pkt_seq;
-            add_timerfd_epoll(global_epoll_fd_recv, TIMER_TYPE_LAST, &(ack_array[pkt_seq]));
-
-            int lost_nr = pkt_seq - max_ack_seq;
-            int timer_nr = (lost_nr < ti->fd_max_cnt) ? lost_nr : ti->fd_max_cnt;  //only create timer for the first fd_max_cnt pkt, to avoid too many ack msg
-            int i;
-            for(i = max_ack_seq+1; i < max_ack_seq+timer_nr; i++)
-            {
-                //if HEAD_TYPE_MSG/HEAD_TYPE_DATA share the same seq number, it will be diffict to handle here.
-                //if the msg lost, there will be a timerfd too, that's wrong.
-                if(bit_array_get(ba, i) == 0)
-                {
-                    ack_array[i].cnt = 0;
-                    ack_array[i].src_id = src_id;
-                    ack_array[i].dst_id = dst_id;
-                    ack_array[i].timestamp = pkt_time;
-                    ack_array[i].seq = i;
-                    add_timerfd_epoll(global_epoll_fd_recv, TIMER_TYPE_MID, &(ack_array[i]));
-                }
-            }
-        }
-    }
-
-    return 0;
-}
-
-//this function slows down the tunnel from 100% to 70% bps. should rewrite it latter.
-int add_timerfd_epoll(int epfd, uint8_t type, struct ack_info_t * info)
-{
-    if(type == TIMER_TYPE_LAST)
-        return 0; // don't send last recived ack, because I found it useless, only cause dup packets.
-
-    struct itimerspec new_value;
-    new_value.it_value.tv_sec = 0;
-    new_value.it_value.tv_nsec = ACK_FIRST_TIME;
-    new_value.it_interval.tv_sec = 0;
-    new_value.it_interval.tv_nsec = ACK_INTERVAL;
-
-    int fd = timerfd_create(CLOCK_MONOTONIC, 0);
-    if(fd == -1)
-    {
-        ERROR(errno, "timerfd_create");
-        return -1;
-    }
-    if(timerfd_settime(fd, 0, &new_value, NULL) == -1)
-    {
-        ERROR(errno, "timerfd_settime");
-        close(fd);
-        return -1;
-    }
-    info->fd = fd;
-    info->type = type;
-    
-    struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLET;
-    ev.data.ptr = (void *)info;
-    if(epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev) == -1)
-    {
-        ERROR(errno, "epoll_ctl");
-        close(fd);
-        return -1;
-    }
-
-    return 0;
-}
 
 /*
   need to filter 2 elements:pkt_time and pkt_seq;

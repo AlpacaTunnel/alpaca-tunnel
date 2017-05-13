@@ -80,17 +80,4 @@ struct tunnel_header_t
 } __attribute__((packed));
 
 
-/*
-  ack_type: 0, middle packet lost, TIMER_TYPE_MID
-  ack_type: 1, last packet recived, TIMER_TYPE_LAST
-*/
-struct ack_msg_t
-{
-    uint16_t src_id;
-    uint16_t dst_id;
-    uint32_t ack_type;
-    uint32_t timestamp;
-    uint32_t seq;
-} __attribute__((packed));
-
 #endif

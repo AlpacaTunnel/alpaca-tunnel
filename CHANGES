@@ -7,6 +7,10 @@ Todo list:
 6. IPv6
 
 
+3.1 2017-05-13
+- remove packets retransmission
+
+
 3.0.2 2017-01-01
 - support route table in chnroute
 
