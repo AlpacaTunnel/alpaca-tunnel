@@ -25,7 +25,7 @@ typedef struct
 } chnroute_t;
 
 
-struct config_t
+typedef struct
 {
     char * mode;  // server/client
     char * group;
@@ -36,18 +36,20 @@ struct config_t
     int mtu;
     char * log_level;
     char * secret_file;
+    int forwarder_nr;
     chnroute_t * chnroute;
+    ll_node_t * forwarders;   // a list of forwarder IDs, will send outter UDP to them
     ll_node_t * local_routes;   // a list of networks or hosts
     ll_node_t * use_dns;  // a list of dns servers, not used now
     ll_node_t * pre_up_cmds;
     ll_node_t * post_up_cmds;
     ll_node_t * pre_down_cmds;
     ll_node_t * post_down_cmds;
-};
+} config_t;
 
-int free_config(struct config_t * configure);
-int load_config(const char * config_file, struct config_t * config);
+int free_config(config_t * configure);
+int load_config(const char * config_file, config_t * config);
 int get_log_level(char* log_level);
-int check_config(struct config_t * config);
+int check_config(config_t * config);
 
 #endif

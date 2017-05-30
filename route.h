@@ -30,29 +30,30 @@ if_index    name        ipaddr       mask
 
 */
 
-struct route_item_t
+typedef struct
 {
     uint16_t next_hop_id;
     uint32_t ip_dst;
     uint32_t ip_src;
-};
+} route_item_t;
 
-struct if_info_t
+struct if_info
 {
-    struct if_info_t *next;
+    struct if_info *next;
     int index;
     uint32_t addr;
     uint32_t mask;
     uint32_t ptp; //P_t_P, Point-to-Point peer addr.
     char name[IFNAMSIZ];
 };
+typedef struct if_info if_info_t;
 
-struct rtnl_handle_t
+typedef struct
 {
     int fd;
     struct sockaddr_nl  local;
     struct sockaddr_nl  peer;
-};
+} rtnl_handle_t;
 
 
 #define RT_TB_SIZE 1024
@@ -70,23 +71,23 @@ int clear_route();
 int add_route(uint16_t next_hop_id, uint32_t ip_dst, uint32_t ip_src);
 uint16_t get_route(uint32_t ip_dst, uint32_t ip_src);
 
-int clear_if_info(struct if_info_t *info);
-int collect_if_info(struct if_info_t **first);
+int clear_if_info(if_info_t *info);
+int collect_if_info(if_info_t **first);
 
 //given an IP, return the iif's index
-int get_ipiif(uint32_t ip, struct if_info_t *if_list);
+int get_ipiif(uint32_t ip, if_info_t *if_list);
 
 //given an IP, return the iif's mask
-uint32_t get_ipmask(uint32_t ip, struct if_info_t *if_list);
+uint32_t get_ipmask(uint32_t ip, if_info_t *if_list);
 
 //given an IP, return the if's index if the IP is a local IP(the IP is in if_list)
-int get_ipif_local(uint32_t ip, struct if_info_t *if_list);
+int get_ipif_local(uint32_t ip, if_info_t *if_list);
 
 //given a string, return the if's index if the string is a interface name(the name is in if_list)
-int get_strif_local(const char * name, struct if_info_t *if_list);
+int get_strif_local(const char * name, if_info_t *if_list);
 
 //return gateway or 0
-uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, struct if_info_t *if_list);
+uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, if_info_t *if_list);
 int add_sys_iproute(uint32_t ip_dst, uint32_t mask, uint32_t gateway, int dev, int table);
 int del_sys_iproute(uint32_t ip_dst, uint32_t mask, uint32_t gateway, int dev, int table);
 

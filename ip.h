@@ -27,22 +27,23 @@
 #define TCPMSS 1300
 
 
-struct ip_dot_decimal_t   //in network byte order
+struct ip_dot_decimal_s   //in network byte order
 {
     byte a;
     byte b;
     byte c;
     byte d;
 } __attribute__((packed));
+typedef struct ip_dot_decimal_s ip_dot_decimal_t;
 
-struct tcp_info_t
+typedef struct
 {
     uint16_t src_port;
     uint16_t dst_port;
     uint32_t init_seq;
     uint32_t seq;
     uint32_t ack_seq;
-};
+} tcp_info_t;
 
 uint16_t inet_ptons(const char *a);   //convert 15.255 to 4095
 int hostname_to_ip(const char *hostname , char *ip);

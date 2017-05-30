@@ -5,7 +5,32 @@
 #include "data_struct.h"
 #include "log.h"
 
-struct bit_array_t* bit_array_create(uint32_t size)
+
+bool str_is_empty(const char * str)
+{
+    return str[0] == '\0';
+}
+
+
+bool str_equal(const char * str1, const char * str2)
+{
+    if(strcmp(str1, str2) == 0)
+        return true;
+    else
+        return false;
+}
+
+
+bool strn_equal(const char * str1, const char * str2, int n)
+{
+    if(strncmp(str1, str2, n) == 0)
+        return true;
+    else
+        return false;
+}
+
+
+bit_array_t* bit_array_create(uint32_t size)
 {
     if(size == 0 || size > BIT_ARRAY_MAX_SIZE)
     {
@@ -13,14 +38,14 @@ struct bit_array_t* bit_array_create(uint32_t size)
         return NULL;
     }
 
-    struct bit_array_t * ba = (struct bit_array_t *)malloc(sizeof(struct bit_array_t));
+    bit_array_t * ba = (bit_array_t *)malloc(sizeof(bit_array_t));
     if(ba == NULL)
     {
         ERROR(errno, "bit_array_create: malloc failed");
         return NULL;
     }
     else
-        bzero(ba, sizeof(struct bit_array_t));
+        bzero(ba, sizeof(bit_array_t));
 
     ba->size = size;
     uint32_t unit_num = (size + BIT_ARRAY_UNIT_SIZE - 1) / BIT_ARRAY_UNIT_SIZE;
@@ -37,7 +62,7 @@ struct bit_array_t* bit_array_create(uint32_t size)
     return ba;
 }
 
-int bit_array_destroy(struct bit_array_t *ba)
+int bit_array_destroy(bit_array_t *ba)
 {
     if(ba == NULL)
         return 0;
@@ -51,7 +76,7 @@ int bit_array_destroy(struct bit_array_t *ba)
     return 0;
 }
 
-int bit_array_copy(struct bit_array_t *dst, struct bit_array_t *src)
+int bit_array_copy(bit_array_t *dst, bit_array_t *src)
 {
     if(dst == NULL || src == NULL)
     {
@@ -69,7 +94,7 @@ int bit_array_copy(struct bit_array_t *dst, struct bit_array_t *src)
     return 0;
 }
 
-int bit_array_clearall(struct bit_array_t *ba)
+int bit_array_clearall(bit_array_t *ba)
 {
     int i;
     uint32_t unit_num = (ba->size + BIT_ARRAY_UNIT_SIZE - 1) / BIT_ARRAY_UNIT_SIZE;
@@ -79,7 +104,7 @@ int bit_array_clearall(struct bit_array_t *ba)
     return 0;
 }
 
-int bit_array_setall(struct bit_array_t *ba)
+int bit_array_setall(bit_array_t *ba)
 {
     int i;
     uint32_t unit_num = (ba->size + BIT_ARRAY_UNIT_SIZE - 1) / BIT_ARRAY_UNIT_SIZE;
@@ -89,7 +114,7 @@ int bit_array_setall(struct bit_array_t *ba)
     return 0;
 }
 
-int bit_array_set(struct bit_array_t *ba, uint32_t index)
+int bit_array_set(bit_array_t *ba, uint32_t index)
 {
     if(index > ba->size)
     {
@@ -104,7 +129,7 @@ int bit_array_set(struct bit_array_t *ba, uint32_t index)
     return 0;
 }
 
-int bit_array_clear(struct bit_array_t *ba, uint32_t index)
+int bit_array_clear(bit_array_t *ba, uint32_t index)
 {
     if(index > ba->size)
     {
@@ -119,7 +144,7 @@ int bit_array_clear(struct bit_array_t *ba, uint32_t index)
     return 0;
 }
 
-int bit_array_get(struct bit_array_t *ba, uint32_t index)
+int bit_array_get(bit_array_t *ba, uint32_t index)
 {
     if(index > ba->size)
     {
@@ -225,12 +250,12 @@ void merge_sort(int64_t arr[], int len)
 }
 
 
-ll_node_t * append_ll(ll_node_t ** first, void * data)
+ll_node_t * ll_append(ll_node_t ** first, void * data)
 {
     ll_node_t * new = (ll_node_t *)malloc(sizeof(ll_node_t));
     if(new == NULL)
     {
-        ERROR(errno, "append_ll: malloc failed");
+        ERROR(errno, "ll_append: malloc failed");
         return NULL;
     }
     new->data = data;
@@ -251,7 +276,7 @@ ll_node_t * append_ll(ll_node_t ** first, void * data)
     return new;
 }
 
-void * shift_ll(ll_node_t ** first)
+void * ll_shift(ll_node_t ** first)
 {
     if(*first == NULL)
         return NULL;
@@ -265,7 +290,7 @@ void * shift_ll(ll_node_t ** first)
     return data;
 }
 
-int free_ll(ll_node_t ** first)
+int ll_free(ll_node_t ** first)
 {
     if(*first == NULL)
         return 0;
@@ -280,6 +305,28 @@ int free_ll(ll_node_t ** first)
     }
 
     return 0;
+}
+
+
+bool ll_is_empty(const ll_node_t * first)
+{
+    return first == NULL;
+}
+
+
+void * ll_get_next(ll_node_t * first, ll_node_t ** saveptr)
+{
+    if(first != NULL)
+        *saveptr = first;
+
+    if(ll_is_empty(*saveptr))
+        return NULL;
+    else
+    {
+        void * data = (*saveptr)->data;
+        *saveptr = (*saveptr)->next;
+        return data;
+    }
 }
 
 

@@ -1,9 +1,10 @@
 {
     "mode": "client",
     "group": "caonima",
-    "id": "16.1",
     "net": "10.17",
+    "id": "16.1",
     "gateway": "1.1",
+    "forwarders": ["1.1", "1.4"],
     "port": 0,
     "mtu": 1408,
     "log_level": "debug",
@@ -14,5 +15,6 @@
     "pre_up_cmds": [],
     "post_up_cmds": [],
     "pre_down_cmds": [],
-    "post_down_cmds": []
+    "post_down_cmds": [],
+    "ack_termination": false
 }

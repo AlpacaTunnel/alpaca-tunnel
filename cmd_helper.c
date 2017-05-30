@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 
 #include "cmd_helper.h"
+#include "data_struct.h"
 #include "log.h"
 #include "ip.h"
 
@@ -15,12 +16,13 @@
 static int iptables_nat_set = 0;
 static int iptables_tcpmss_set = 0;
 
+
 int run_cmd_list(ll_node_t ** cmd_list)
 {
     char *cmd;
     int rc;
     int flag = 0;
-    while( (cmd = shift_ll(cmd_list) ) != NULL)
+    while( (cmd = ll_shift(cmd_list) ) != NULL)
     {
         rc = system(cmd);
         if(rc != 0)

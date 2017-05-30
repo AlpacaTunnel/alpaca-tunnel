@@ -20,64 +20,101 @@
 #define TTL_MAX 0xF
 #define TTL_MIN 0
 
+#define HEADER_MAGIC 1990
+
 /*
-  type: 0, data
-  type: 1, ack_msg
+  type: 0, L3 package
+  type: 1, message
 */
 
-struct m_type_len_t
+struct type_len_m_s
 {
-    uint m:1;
-    uint type:4;
-    uint len:11;
+    uint type  : 4;
+    uint len   : 11;
+    uint more  : 1;     // more heaer after
 } __attribute__((packed));
 
-typedef union
+union type_len_m_u
 {
-    struct m_type_len_t bit;
-    uint16_t u16;
-} m_type_len_u;
+    struct type_len_m_s  bit;
+    uint16_t             u16;
+};
 
-struct ttl_flag_random_t
+struct uint4_t
 {
-    uint ttl:4;
-    bool src_inside:1;
-    bool dst_inside:1;
-    uint random:10;     //random is not random, it's better be 0, to verify group.
+    uint value : 4;
 } __attribute__((packed));
 
-typedef union
+struct pi_s
 {
-    struct ttl_flag_random_t bit;
-    uint16_t u16;
-} ttl_flag_random_u;
-
-struct seq_frag_off_t
-{
-    uint32_t seq:24;
-    uint frag:1;
-    uint off:7;
+    uint a : 2;
+    uint b : 2;
 } __attribute__((packed));
 
-typedef union
+union pi_u
 {
-    struct seq_frag_off_t bit;
-    uint32_t u32;
-} seq_frag_off_u;
+    struct pi_s  bit;
+    struct uint4_t      u4;
+};
+
+
+struct ttl_pi_sd_s
+{
+    uint        ttl        : 4;
+    uint        pi_a       : 2;    // path index
+    uint        pi_b       : 2;    // path index
+    bool        si         : 1;    // source inside flag
+    bool        di         : 1;    // dest inside flag
+    uint        reserved   : 6;
+} __attribute__((packed));
+
+union ttl_pi_sd_u
+{
+    struct ttl_pi_sd_s  bit;
+    uint16_t            u16;
+};
+
+
+struct time_magic_s
+{
+    uint32_t time   : 20;
+    uint     magic  : 12;   // magic number, if not match, group may be wrong
+} __attribute__((packed));
+
+union time_magic_u
+{
+    struct time_magic_s  bit;
+    uint32_t             u32;
+};
+
+
+struct seq_rand_s
+{
+    uint32_t seq   : 20;
+    uint     rand  : 12;
+} __attribute__((packed));
+
+union seq_rand_u
+{
+    struct seq_rand_s  bit;
+    uint32_t           u32;
+};
 
 /*
   all data in header are stored in network bit/byte order.
 */
 
-struct tunnel_header_t
+struct tunnel_header_s
 {
-    m_type_len_u m_type_len;
-    ttl_flag_random_u ttl_flag_random;
-    uint16_t src_id;
-    uint16_t dst_id;
-    uint32_t time;
-    seq_frag_off_u seq_frag_off;
+    union type_len_m_u   type_len_m;
+    union ttl_pi_sd_u    ttl_pi_sd;
+    uint16_t             src_id;
+    uint16_t             dst_id;
+    union time_magic_u   time_magic;
+    union seq_rand_u     seq_rand;
 } __attribute__((packed));
+
+typedef struct tunnel_header_s tunnel_header_t;
 
 
 #endif

@@ -18,14 +18,14 @@
 static int jsoneq(const char *json, jsmntok_t *tok, const char *s)
 {
     if(tok->type == JSMN_STRING && (int) strlen(s) == tok->end - tok->start
-            && strncmp(json + tok->start, s, tok->end - tok->start) == 0)
+            && strn_equal(json + tok->start, s, tok->end - tok->start))
         return 0;
     else
         return -1;
 }
 
 
-int free_config(struct config_t * config)
+int free_config(config_t * config)
 {
     free(config->mode);
     free(config->group);
@@ -33,18 +33,19 @@ int free_config(struct config_t * config)
     free(config->secret_file);
     free(config->chnroute);
 
-    free_ll(&config->use_dns);
-    free_ll(&config->local_routes);
-    free_ll(&config->pre_up_cmds);
-    free_ll(&config->post_up_cmds);
-    free_ll(&config->pre_down_cmds);
-    free_ll(&config->post_down_cmds);
+    ll_free(&config->forwarders);
+    ll_free(&config->use_dns);
+    ll_free(&config->local_routes);
+    ll_free(&config->pre_up_cmds);
+    ll_free(&config->post_up_cmds);
+    ll_free(&config->pre_down_cmds);
+    ll_free(&config->post_down_cmds);
 
     return 0;
 }
 
 
-int load_config(const char * config_file, struct config_t * config)
+int load_config(const char * config_file, config_t * config)
 {
     FILE *f = fopen(config_file, "r");
     if(f == NULL)
@@ -154,7 +155,22 @@ int load_config(const char * config_file, struct config_t * config)
         {
             config->secret_file = strndup(start, len);
             i++;
-        } 
+        }
+        else if(jsoneq(json_string, &tok[i], "forwarders") == 0) 
+        {
+            int j;
+            if(tok[i+1].type != JSMN_ARRAY) 
+                continue;
+            for(j = 0; j < tok[i+1].size; j++) 
+            {
+                jsmntok_t *g = &tok[i+j+2];
+                char * start_g = json_string + g->start;
+                int len_g = g->end - g->start;
+                char * cg = strndup(start_g, len_g);
+                ll_append(&config->forwarders, cg);
+            }
+            i += tok[i+1].size + 1;
+        }
         else if(jsoneq(json_string, &tok[i], "use_dns") == 0) 
         {
             int j;
@@ -166,7 +182,7 @@ int load_config(const char * config_file, struct config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                append_ll(&config->use_dns, cg);
+                ll_append(&config->use_dns, cg);
             }
             i += tok[i+1].size + 1;
         }
@@ -181,7 +197,7 @@ int load_config(const char * config_file, struct config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                append_ll(&config->local_routes, cg);
+                ll_append(&config->local_routes, cg);
             }
             i += tok[i+1].size + 1;
         } 
@@ -196,7 +212,7 @@ int load_config(const char * config_file, struct config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                append_ll(&config->pre_up_cmds, cg);
+                ll_append(&config->pre_up_cmds, cg);
             }
             i += tok[i+1].size + 1;
         } 
@@ -211,7 +227,7 @@ int load_config(const char * config_file, struct config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                append_ll(&config->post_up_cmds, cg);
+                ll_append(&config->post_up_cmds, cg);
             }
             i += tok[i+1].size + 1;
         }
@@ -226,7 +242,7 @@ int load_config(const char * config_file, struct config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                append_ll(&config->pre_down_cmds, cg);
+                ll_append(&config->pre_down_cmds, cg);
             }
             i += tok[i+1].size + 1;
         } 
@@ -241,7 +257,7 @@ int load_config(const char * config_file, struct config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                append_ll(&config->post_down_cmds, cg);
+                ll_append(&config->post_down_cmds, cg);
             }
             i += tok[i+1].size + 1;
         }
@@ -303,24 +319,24 @@ int get_log_level(char* log_level)
     for(i = 0; i < len; ++i)
         level[i] = tolower(log_level[i]);
 
-    if(strcmp(level, "critical") == 0)
+    if(str_equal(level, "critical"))
         return LOG_LEVEL_CRITICAL;
-    else if(strcmp(level, "error") == 0)
+    else if(str_equal(level, "error"))
         return LOG_LEVEL_ERROR;
-    else if(strcmp(level, "warning") == 0)
+    else if(str_equal(level, "warning"))
         return LOG_LEVEL_WARNING;
-    else if(strcmp(level, "info") == 0)
+    else if(str_equal(level, "info"))
         return LOG_LEVEL_INFO;
-    else if(strcmp(level, "debug") == 0)
+    else if(str_equal(level, "debug"))
         return LOG_LEVEL_DEBUG;
-    else if(strcmp(level, "notset") == 0)
+    else if(str_equal(level, "notset"))
         return LOG_LEVEL_NOTSET;
     
     return LOG_LEVEL_INFO;
 }
 
 
-int check_config(struct config_t * config)
+int check_config(config_t * config)
 {
     if(config->mode == NULL || config->group == NULL || config->id[0] == '\0' || config->net[0] == '\0')
     {
@@ -328,7 +344,7 @@ int check_config(struct config_t * config)
         return -1;
     }
 
-    if(strcmp(config->mode, "client") != 0 && strcmp(config->mode, "server") != 0)
+    if(!str_equal(config->mode, "client") && !str_equal(config->mode, "server"))
     {
         ERROR(0, "mode must be client or server: %s", config->mode);
         return -1;
@@ -348,19 +364,44 @@ int check_config(struct config_t * config)
         return -1;
     }
 
-    if(strcmp(config->mode, "client") == 0)
+    if(str_equal(config->mode, "client"))
     {
-        if(config->gateway[0] == '\0')
-            WARNING("please specify a gateway for the client!");
-        else
+        if(str_is_empty(config->gateway))
         {
-            int gateway_id = inet_ptons(config->gateway);
-            if(gateway_id <= 1 || gateway_id >= MAX_ID)
+            ERROR(0, "please specify a gateway for the client!");
+            return -1;
+        }
+
+        if(ll_is_empty(config->forwarders))
+        {
+            ERROR(0, "please specify at least a forwarder for the client!");
+            return -1;
+        }
+
+        int gateway_id = inet_ptons(config->gateway);
+        if(gateway_id <= 1 || gateway_id >= MAX_ID)
+        {
+            ERROR(0, "gateway must between 0.2 and 255.254: %s", config->gateway);
+            return -1;
+        }
+
+        config->forwarder_nr = 0;
+        ll_node_t * saveptr = NULL;
+        char * forwarder_str = (char *)ll_get_next(config->forwarders, &saveptr);
+        while(forwarder_str != NULL)
+        {
+            config->forwarder_nr ++;
+            int forwarder_id = inet_ptons(forwarder_str);
+            if(forwarder_id <= 1 || forwarder_id >= MAX_ID)
             {
-                ERROR(0, "gateway must between 0.2 and 255.254: %s", config->gateway);
+                ERROR(0, "forwarder must between 0.2 and 255.254: %s", forwarder_str);
                 return -1;
             }
+            INFO("forwarder: %s", forwarder_str);
+            forwarder_str = (char *)ll_get_next(NULL, &saveptr);
         }
+        if(config->forwarder_nr > 4)
+            WARNING("forwarders are too many!");
     }
 
     if(config->port < 0 || config->port > 65534)

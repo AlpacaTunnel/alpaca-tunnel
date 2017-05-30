@@ -12,11 +12,11 @@
 //#define BIT_ARRAY_UNIT_MASK 0xFF
 typedef uint8_t bit_array_unit;
 
-struct bit_array_t 
+typedef struct 
 {
     bit_array_unit *array;
     uint32_t size;
-};
+} bit_array_t;
 
 
 // linked list node
@@ -63,23 +63,28 @@ typedef struct
 } prior_q_t;
 
 
-//must call at first
-struct bit_array_t* bit_array_create(uint32_t size);
-//must call at the end
-int bit_array_destroy(struct bit_array_t *ba);
-int bit_array_copy(struct bit_array_t *dst, struct bit_array_t *src);
+bool str_is_empty(const char * str);
+bool str_equal(const char * str1, const char * str2);
+bool strn_equal(const char * str1, const char * str2, int n);
 
-int bit_array_clearall(struct bit_array_t *ba);
-int bit_array_setall(struct bit_array_t *ba);
+
+//must call at first
+bit_array_t* bit_array_create(uint32_t size);
+//must call at the end
+int bit_array_destroy(bit_array_t *ba);
+int bit_array_copy(bit_array_t *dst, bit_array_t *src);
+
+int bit_array_clearall(bit_array_t *ba);
+int bit_array_setall(bit_array_t *ba);
 
 /*
   return -1: error
   return 0: empty
   return 1: occupy
 */
-int bit_array_set(struct bit_array_t *ba, uint32_t index);
-int bit_array_clear(struct bit_array_t *ba, uint32_t index);
-int bit_array_get(struct bit_array_t *ba, uint32_t index);
+int bit_array_set(bit_array_t *ba, uint32_t index);
+int bit_array_clear(bit_array_t *ba, uint32_t index);
+int bit_array_get(bit_array_t *ba, uint32_t index);
 
 
 int binary_search(const int64_t arr[], int start, int end, int key);
@@ -87,9 +92,12 @@ void bubble_sort(int64_t arr[], int len);
 void merge_sort(int64_t arr[], int len);
 
 
-ll_node_t * append_ll(ll_node_t ** first, void * data);
-void * shift_ll(ll_node_t ** first);
-int free_ll(ll_node_t ** first);
+ll_node_t * ll_append(ll_node_t ** first, void * data);
+void * ll_shift(ll_node_t ** first);
+int ll_free(ll_node_t ** first);
+bool ll_is_empty(const ll_node_t * first);
+void * ll_get_next(ll_node_t * first, ll_node_t ** saveptr); // use the function just like strtok_r()
+
 
 /*
  * The ll_array is self made malloc! must load data with another array after init.

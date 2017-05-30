@@ -8,20 +8,23 @@
 #include "log.h"
 #include "ip.h"
 
+int shrink_line(char *line);
+bool peer_equal(peer_profile_t * peer1, peer_profile_t * peer2);
 
-struct peer_profile_t* add_peer()
+peer_profile_t* add_peer()
 {
-    struct peer_profile_t * p = (struct peer_profile_t *)malloc(sizeof(struct peer_profile_t));
+    peer_profile_t * p = (peer_profile_t *)malloc(sizeof(peer_profile_t));
     if(p == NULL)
     {
         ERROR(errno, "add_peer: malloc failed");
         return NULL;
     }
     else
-        bzero(p, sizeof(struct peer_profile_t));
+        bzero(p, sizeof(peer_profile_t));
 
-    struct sockaddr_in * peeraddr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
-    if(peeraddr == NULL)
+    // struct sockaddr_in * peeraddr_ = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+    addr_profile_t * path_array = (addr_profile_t *)malloc(sizeof(addr_profile_t) * (MAX_PATH+1));
+    if(path_array == NULL)
     {
         ERROR(errno, "add_peer: malloc failed");
         delete_peer(p);
@@ -29,12 +32,12 @@ struct peer_profile_t* add_peer()
     }
     else
     {
-        bzero(peeraddr, sizeof(struct sockaddr_in));
-        p->peeraddr = peeraddr;
+        bzero(path_array, sizeof(struct sockaddr_in));
+        p->path_array = path_array;
     }
 
     uint32_t * pkt_index_array_pre = (uint32_t *)malloc(SEQ_LEVEL_1*sizeof(uint32_t));
-    if(peeraddr == NULL)
+    if(pkt_index_array_pre == NULL)
     {
         ERROR(errno, "add_peer: malloc failed");
         delete_peer(p);
@@ -47,7 +50,7 @@ struct peer_profile_t* add_peer()
     }
 
     uint32_t * pkt_index_array_now = (uint32_t *)malloc(SEQ_LEVEL_1*sizeof(uint32_t));
-    if(peeraddr == NULL)
+    if(pkt_index_array_now == NULL)
     {
         ERROR(errno, "add_peer: malloc failed");
         delete_peer(p);
@@ -59,7 +62,7 @@ struct peer_profile_t* add_peer()
         p->pkt_index_array_now = pkt_index_array_now;
     }
 
-    p->tcp_info = (struct tcp_info_t *)malloc(TCP_SESSION_CNT * sizeof(struct tcp_info_t));
+    p->tcp_info = (tcp_info_t *)malloc(TCP_SESSION_CNT * sizeof(tcp_info_t));
     if(p->tcp_info == NULL)
     {
         ERROR(errno, "add_peer: malloc failed");
@@ -67,10 +70,10 @@ struct peer_profile_t* add_peer()
         return NULL;
     }
     else
-        bzero(p->tcp_info, TCP_SESSION_CNT * sizeof(struct tcp_info_t));
+        bzero(p->tcp_info, TCP_SESSION_CNT * sizeof(tcp_info_t));
     p->tcp_cnt = 0;
 
-    p->flow_src = (struct flow_profile_t *)malloc(sizeof(struct flow_profile_t));
+    p->flow_src = (flow_profile_t *)malloc(sizeof(flow_profile_t));
     if(p->flow_src == NULL)
     {
         ERROR(errno, "add_peer: malloc failed");
@@ -78,7 +81,7 @@ struct peer_profile_t* add_peer()
         return NULL;
     }
     else
-        bzero(p->flow_src, sizeof(struct flow_profile_t));
+        bzero(p->flow_src, sizeof(flow_profile_t));
 
     p->flow_src->ba_pre = bit_array_create(SEQ_LEVEL_1);
     if(p->flow_src->ba_pre == NULL)
@@ -106,13 +109,13 @@ struct peer_profile_t* add_peer()
 }
 
 
-int delete_peer(struct peer_profile_t* p)
+int delete_peer(peer_profile_t* p)
 {
     if(p == NULL)
         return 0;
 
-    if(p->peeraddr != NULL)
-        free(p->peeraddr);
+    if(p->path_array != NULL)
+        free(p->path_array);
 
     if(p->pkt_index_array_pre != NULL)
         free(p->pkt_index_array_pre);
@@ -137,7 +140,7 @@ int delete_peer(struct peer_profile_t* p)
 
 
 //note: file descriptors in dst will/must be closed, FD in src will be changed to NUL.
-int copy_peer(struct peer_profile_t* dst, struct peer_profile_t* src)
+int copy_peer(peer_profile_t* dst, peer_profile_t* src)
 {
     if(dst == NULL || src == NULL)
     {
@@ -145,9 +148,9 @@ int copy_peer(struct peer_profile_t* dst, struct peer_profile_t* src)
         return -1;
     }
 
-    if(dst->peeraddr == NULL || src->peeraddr == NULL)
+    if(dst->path_array == NULL || src->path_array == NULL)
     {
-        ERROR(0, "copy_peer: dst->peeraddr or src->peeraddr is NULL");
+        ERROR(0, "copy_peer: dst->path_array or src->path_array is NULL");
         return -1;
     }
 
@@ -183,7 +186,7 @@ int copy_peer(struct peer_profile_t* dst, struct peer_profile_t* src)
     dst->rip            = src->rip;
 
     memcpy(dst->psk, src->psk, 2*AES_TEXT_LEN);
-    memcpy(dst->peeraddr, src->peeraddr, sizeof(struct sockaddr_in));
+    memcpy(dst->path_array, src->path_array, sizeof(addr_profile_t));
     
     uint32_t * index_array_tmp;
     index_array_tmp = dst->pkt_index_array_pre;
@@ -209,19 +212,19 @@ int copy_peer(struct peer_profile_t* dst, struct peer_profile_t* src)
 }
 
 
-struct peer_profile_t** init_peer_table(FILE *secrets_file, int max_id)
+peer_profile_t** init_peer_table(FILE *secrets_file, int max_id)
 {
     if(NULL == secrets_file)
         return NULL;
 
-    struct peer_profile_t ** peer_table = (struct peer_profile_t **)malloc((max_id+1) * sizeof(struct peer_profile_t*));
+    peer_profile_t ** peer_table = (peer_profile_t **)malloc((max_id+1) * sizeof(peer_profile_t*));
     if(peer_table == NULL)
     {
         ERROR(errno, "init_peer_table: malloc failed");
         return NULL;
     }
     else
-        bzero(peer_table, (max_id+1) * sizeof(struct peer_profile_t*));
+        bzero(peer_table, (max_id+1) * sizeof(peer_profile_t*));
 
     if(update_peer_table(peer_table, secrets_file, max_id) < 0)
     {
@@ -235,7 +238,7 @@ struct peer_profile_t** init_peer_table(FILE *secrets_file, int max_id)
 
 
 //there should be lock handle, such as global_stat_spin, but I just don't want to implement it now.
-int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, int max_id)
+int update_peer_table(peer_profile_t** peer_table, FILE *secrets_file, int max_id)
 {
     if(NULL == peer_table || NULL == secrets_file)
     {
@@ -289,7 +292,7 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
             continue;
         }
         
-        struct peer_profile_t * tmp_peer = add_peer();
+        peer_profile_t * tmp_peer = add_peer();
         if(tmp_peer == NULL)
         {
             ERROR(errno, "update_peer_table: add_peer failed.");
@@ -321,9 +324,10 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
                 WARNING("Invalid host of peer: %s, %s nslookup failed, ingore it's IP/Port value!", id_str, ip_name_str);
             else
             {
-                inet_pton(AF_INET, ip_str, &(tmp_peer->peeraddr->sin_addr));
-                tmp_peer->peeraddr->sin_family = AF_INET;
-                tmp_peer->peeraddr->sin_port = htons(tmp_peer->port);
+                struct sockaddr_in * tmp_addr = &(tmp_peer->path_array[0].peeraddr);
+                inet_pton(AF_INET, ip_str, &(tmp_addr->sin_addr));
+                tmp_addr->sin_family = AF_INET;
+                tmp_addr->sin_port = htons(tmp_peer->port);
                 tmp_peer->restricted = true;
             }
         }
@@ -334,10 +338,7 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
         tmp_peer->vip = htonl(id); //0.0.x.x in network byte order, used inside tunnel.
         //tmp_peer->rip = (global_tunif.addr & global_tunif.mask) | htonl(id); //in network byte order.
 
-        if(peer_table[id] != NULL &&
-            tmp_peer->peeraddr->sin_addr.s_addr == peer_table[id]->peeraddr->sin_addr.s_addr &&
-            tmp_peer->peeraddr->sin_port == peer_table[id]->peeraddr->sin_port &&
-            strncmp((char *)(tmp_peer->psk), (char *)(peer_table[id]->psk), 2*AES_TEXT_LEN) == 0)
+        if(peer_table[id] != NULL && peer_equal(peer_table[id], tmp_peer))
         {
             //the peer does not change
             peer_table[id]->discard = false;
@@ -376,6 +377,25 @@ int update_peer_table(struct peer_profile_t** peer_table, FILE *secrets_file, in
 }
 
 
+bool peer_equal(peer_profile_t * peer1, peer_profile_t * peer2)
+{
+    if(!strn_equal((char *)(peer1->psk), (char *)(peer2->psk), 2*AES_TEXT_LEN))
+        return false;
+
+    for(int i = 0; i <= MAX_PATH; i++)
+    {
+        struct sockaddr_in * tmp_addr1 = &(peer1->path_array[i].peeraddr);
+        struct sockaddr_in * tmp_addr2 = &(peer2->path_array[i].peeraddr);
+        if(tmp_addr1->sin_addr.s_addr != tmp_addr2->sin_addr.s_addr)
+            return false;
+        if(tmp_addr1->sin_port != tmp_addr2->sin_port)
+            return false;
+    }
+
+    return true;
+}
+
+
 /*
 * replace all white-space characters to spaces, remove all characters after '#'
 */
@@ -393,7 +413,7 @@ int shrink_line(char *line)
 }
 
 
-int destroy_peer_table(struct peer_profile_t **peer_table, int max_id)
+int destroy_peer_table(peer_profile_t **peer_table, int max_id)
 {
     if(NULL == peer_table)
         return 0;

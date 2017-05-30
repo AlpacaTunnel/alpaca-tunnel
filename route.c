@@ -20,7 +20,7 @@ static int route_spin_inited = 0;
 
 //rt_tb_index points to the latest route_item_t
 static int rt_tb_index = 0;
-static struct route_item_t route_table[RT_TB_SIZE];
+static route_item_t route_table[RT_TB_SIZE];
 
 int init_route_spin()
 {
@@ -136,9 +136,9 @@ uint16_t get_route(uint32_t ip_dst, uint32_t ip_src)
     return 0;
 }
 
-int get_ipif_local(uint32_t ip, struct if_info_t *if_list)
+int get_ipif_local(uint32_t ip, if_info_t *if_list)
 {
-    struct if_info_t *p = if_list;
+    if_info_t *p = if_list;
     while(p)
     {
         if(p->addr == ip)
@@ -149,9 +149,9 @@ int get_ipif_local(uint32_t ip, struct if_info_t *if_list)
     return 0;
 }
 
-int get_strif_local(const char * name, struct if_info_t *if_list)
+int get_strif_local(const char * name, if_info_t *if_list)
 {
-    struct if_info_t *p = if_list;
+    if_info_t *p = if_list;
     while(p)
     {
         if(strcmp(p->name, name) == 0)
@@ -162,9 +162,9 @@ int get_strif_local(const char * name, struct if_info_t *if_list)
     return 0;
 }
 
-int get_ipiif(uint32_t ip, struct if_info_t *if_list)
+int get_ipiif(uint32_t ip, if_info_t *if_list)
 {
-    struct if_info_t *p = if_list;
+    if_info_t *p = if_list;
     while(p)
     {
         if(p->ptp == ip)
@@ -177,9 +177,9 @@ int get_ipiif(uint32_t ip, struct if_info_t *if_list)
     return 0;
 }
 
-uint32_t get_ipmask(uint32_t ip, struct if_info_t *if_list)
+uint32_t get_ipmask(uint32_t ip, if_info_t *if_list)
 {
-    struct if_info_t *p = if_list;
+    if_info_t *p = if_list;
     while(p)
     {
         if(p->ptp == ip)
@@ -192,7 +192,7 @@ uint32_t get_ipmask(uint32_t ip, struct if_info_t *if_list)
     return 0;
 }
 
-int clear_if_info(struct if_info_t *info)
+int clear_if_info(if_info_t *info)
 {
     if(NULL == info)
         return 0;
@@ -203,7 +203,7 @@ int clear_if_info(struct if_info_t *info)
         return -1;
     }
 
-    struct if_info_t *p;
+    if_info_t *p;
     while(info)
     {
         p = info;
@@ -220,7 +220,7 @@ int clear_if_info(struct if_info_t *info)
     return 0;
 }
 
-int collect_if_info(struct if_info_t **first)
+int collect_if_info(if_info_t **first)
 {
     if(pthread_spin_lock(&route_spin) != 0)
     {
@@ -235,8 +235,8 @@ int collect_if_info(struct if_info_t **first)
         return -1;
     }
     int index = 0;
-    struct if_info_t *p = NULL;
-    struct if_info_t *last = NULL;
+    if_info_t *p = NULL;
+    if_info_t *last = NULL;
     *first = NULL;
     for(ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next)
     {
@@ -249,7 +249,7 @@ int collect_if_info(struct if_info_t **first)
         if(NULL == ifa->ifa_addr || AF_INET != ifa->ifa_addr->sa_family)
             continue;
 
-        p = malloc(sizeof(struct if_info_t));
+        p = malloc(sizeof(if_info_t));
 
         if(NULL == *first)
             *first = p;
@@ -286,7 +286,7 @@ int collect_if_info(struct if_info_t **first)
     return 0;
 }
 
-uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, struct if_info_t *if_list)
+uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, if_info_t *if_list)
 {
     //ip rou get 4.4.4.4 from 10.7.0.2 iif ppptun2
     //ip_dst & ip_src are in network byte order
@@ -306,7 +306,7 @@ uint32_t get_sys_iproute(uint32_t ip_dst, uint32_t ip_src, struct if_info_t *if_
         char            buf[8192];
     } rt_req;
 
-    struct rtnl_handle_t rth;
+    rtnl_handle_t rth;
     struct nlmsghdr *nlp;
     struct rtmsg *rtp;
     struct rtattr *rtap;
@@ -457,7 +457,7 @@ int set_sys_iproute(uint32_t ip_dst, uint32_t mask, uint32_t gateway, int dev, i
         char            buf[8192];
     } rt_req;
 
-    struct rtnl_handle_t rth;
+    rtnl_handle_t rth;
     struct rtattr *rtap;
     int rtl;
 
