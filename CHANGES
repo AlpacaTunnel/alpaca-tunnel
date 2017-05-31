@@ -7,6 +7,14 @@ Todo list:
 6. IPv6
 
 
+4.0.1 2017-05-31
+- fix bug: ping between servers failed
+
+
+4.0 2017-05-30
+- add path index to header
+
+
 3.1 2017-05-13
 - remove packets retransmission
 

@@ -23,7 +23,7 @@
 
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "4.0"
+#define VERSION         "4.0.1"
 
 /*
  * Config file path choose order:
@@ -1770,11 +1770,11 @@ void* server_send(void *arg)
         len = global_send_buf[global_send_first].len;
         bool dup = global_send_buf[global_send_first].dup;
         bool forward = global_send_buf[global_send_first].forward;
+        struct sockaddr_in src_addr = global_send_buf[global_send_first].src_addr;
         dst_id = global_send_buf[global_send_first].dst_id;
         src_id = global_send_buf[global_send_first].src_id;
         memcpy(buf_send, global_send_buf[global_send_first].buf_packet, len);  // header and ICV are not encryped
         memcpy(&header_send, buf_send, HEADER_LEN);
-        struct sockaddr_in src_addr = global_send_buf[global_send_first].src_addr;
 
         header_send.seq_rand.u32 = ntohl(header_send.seq_rand.u32);
         header_send.seq_rand.bit.rand = random();
@@ -1804,7 +1804,7 @@ void* server_send(void *arg)
                 int forwarder_id = global_forwarders[i];
                 if(peer_table[forwarder_id] == NULL)
                     continue;
-                peeraddr = peer_table[forwarder_id]->path_array[0].peeraddr;
+                peeraddr = peer_table[forwarder_id]->path_array[0].peeraddr;  // only forward to first path
 
                 if(forward)
                 {
@@ -1833,8 +1833,16 @@ void* server_send(void *arg)
 
             for(int i = 0; i <= MAX_PATH; i++)
             {
-                if(dst_id > src_id)
+                peeraddr = peer_table[dst_id]->path_array[i].peeraddr;
+                if(peeraddr.sin_addr.s_addr == 0)
                 {
+                    // DEBUG("path not avaliable: %d", i);
+                    continue;
+                }
+
+                // if(dst_id > src_id)
+                // {
+                // at the very beginning, both last_time are 0
                     uint path_last_time = peer_table[dst_id]->path_array[i].last_time;
                     uint peer_last_time = peer_table[dst_id]->last_time;
                     if(abs(peer_last_time - path_last_time) > PATH_LIFE)
@@ -1843,14 +1851,7 @@ void* server_send(void *arg)
                         // DEBUG("path timeout: %d, peer: %d, path: %d", i, peer_last_time, path_last_time);
                         continue;
                     }
-                }
-
-                peeraddr = peer_table[dst_id]->path_array[i].peeraddr;
-                if(peeraddr.sin_addr.s_addr == 0)
-                {
-                    // DEBUG("path not avaliable: %d", i);
-                    continue;
-                }
+                // }
 
                 if(forward)
                 {
@@ -2067,14 +2068,12 @@ void* server_recv(void *arg)
         // INFO("recv pkt_time: %d", pkt_time);
         // INFO("recv pkt_seq: %d", pkt_seq);
 
-
-        //store the src's UDP socket only when src_id is bigger.
-        //otherwise, the bigger id may forge any smaller id's source address.
-        if(src_id > dst_id && !(peer_table[src_id]->restricted))
+        // todo: may attack here
+        if(!(peer_table[src_id]->restricted))
         {
             peer_table[src_id]->path_array[pi].peeraddr = peeraddr;
-            peer_table[src_id]->path_array[pi].last_time = pkt_time;
         }
+        peer_table[src_id]->path_array[pi].last_time = pkt_time;
         peer_table[src_id]->last_time = pkt_time;
 
 
