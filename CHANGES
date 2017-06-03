@@ -7,6 +7,10 @@ Todo list:
 6. IPv6
 
 
+4.0.3 2017-06-03
+- allow empty forwarders for client
+
+
 4.0.2 2017-06-03
 - fix bug in binary_search
 

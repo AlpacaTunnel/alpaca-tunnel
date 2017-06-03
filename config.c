@@ -372,37 +372,31 @@ int check_config(config_t * config)
             return -1;
         }
 
-        if(ll_is_empty(config->forwarders))
-        {
-            ERROR(0, "please specify at least a forwarder for the client!");
-            return -1;
-        }
-
         int gateway_id = inet_ptons(config->gateway);
         if(gateway_id <= 1 || gateway_id >= MAX_ID)
         {
             ERROR(0, "gateway must between 0.2 and 255.254: %s", config->gateway);
             return -1;
         }
-
-        config->forwarder_nr = 0;
-        ll_node_t * saveptr = NULL;
-        char * forwarder_str = (char *)ll_get_next(config->forwarders, &saveptr);
-        while(forwarder_str != NULL)
-        {
-            config->forwarder_nr ++;
-            int forwarder_id = inet_ptons(forwarder_str);
-            if(forwarder_id <= 1 || forwarder_id >= MAX_ID)
-            {
-                ERROR(0, "forwarder must between 0.2 and 255.254: %s", forwarder_str);
-                return -1;
-            }
-            INFO("forwarder: %s", forwarder_str);
-            forwarder_str = (char *)ll_get_next(NULL, &saveptr);
-        }
-        if(config->forwarder_nr > 4)
-            WARNING("forwarders are too many!");
     }
+
+    config->forwarder_nr = 0;
+    ll_node_t * saveptr = NULL;
+    char * forwarder_str = (char *)ll_get_next(config->forwarders, &saveptr);
+    while(forwarder_str != NULL)
+    {
+        config->forwarder_nr ++;
+        int forwarder_id = inet_ptons(forwarder_str);
+        if(forwarder_id <= 1 || forwarder_id >= MAX_ID)
+        {
+            ERROR(0, "forwarder must between 0.2 and 255.254: %s", forwarder_str);
+            return -1;
+        }
+        INFO("forwarder: %s", forwarder_str);
+        forwarder_str = (char *)ll_get_next(NULL, &saveptr);
+    }
+    if(config->forwarder_nr > 4)
+        WARNING("too many forwarders!");
 
     if(config->port < 0 || config->port > 65534)
     {
