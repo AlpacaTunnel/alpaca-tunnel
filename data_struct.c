@@ -159,7 +159,7 @@ int bit_array_get(bit_array_t *ba, uint32_t index)
     return v;
 }
 
-int binary_search(const int64_t arr[], int start, int end, int key)
+int binary_search(const int64_t arr[], int start, int end, int64_t key)
 {
     int mid;
     while (start <= end) 

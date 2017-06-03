@@ -23,7 +23,7 @@
 
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "4.0.1"
+#define VERSION         "4.0.2"
 
 /*
  * Config file path choose order:
@@ -76,7 +76,7 @@
 #define ACK_FIRST_TIME  10000000
 #define ACK_INTERVAL    50000000
 #define ACK_WRITE_DELAY 100  // ms
-#define UDP_DUP_DELAY   30  // ms
+#define UDP_DUP_DELAY   100  // ms
 
 
 enum {pkt_none, pkt_write, pkt_send} packet_type = pkt_none;
@@ -1549,12 +1549,10 @@ void* server_read(void *arg)
     uint16_t src_id;
     uint16_t dst_id;
     uint16_t bigger_id;
-    // struct sockaddr_in peeraddr;
     struct iphdr ip_h;
     uint16_t len_load, nr_aes_block;
     byte * buf_load = (byte *)malloc(TUN_MTU);
     byte * buf_send = (byte *)malloc(ETH_MTU);
-    // byte buf_header[HEADER_LEN];
     byte * buf_psk;
     int i;
     bzero(buf_load, TUN_MTU);
@@ -1577,12 +1575,6 @@ void* server_read(void *arg)
             DEBUG("tunif %s read packet to peer %d.%d: invalid peer!", global_tunif.name, dst_id/256, dst_id%256);
             continue;
         }
-        // if(NULL == peer_table[dst_id]->peeraddr)
-        // {
-        //     DEBUG("tunif %s read packet to peer %d.%d: invalid addr!", global_tunif.name, dst_id/256, dst_id%256);
-        //     continue;
-        // }
-        // peeraddr = peer_table[dst_id]->path_array[0].peeraddr;
 
         //dst addr is in the same network with global_tunif
         bool dst_inside = ((ip_h.daddr & global_tunif.mask) == (global_tunif.addr & global_tunif.mask));
@@ -1606,20 +1598,16 @@ void* server_read(void *arg)
         if(src_inside)
         {
             header_send.ttl_pi_sd.bit.si = true;
-            //now src_id == global_self_id; but in the future, src_id may be other peer's id.
-            // src_id = ntohl(ip_h.saddr);
             ip_snat(buf_load, peer_table[src_id]->vip);
         }
         else
         {
             header_send.ttl_pi_sd.bit.si = false;
-            // src_id = global_self_id;
         }
 
         if(dst_inside)
         {
             header_send.ttl_pi_sd.bit.di = true;
-            // dst_id = ntohl(ip_h.daddr);
             ip_dnat(buf_load, peer_table[dst_id]->vip);
         }
         else
@@ -1678,20 +1666,15 @@ void* server_read(void *arg)
             continue;
         }
 
-        // header_send.seq_rand.bit.rand = random();
         header_send.seq_rand.u32 = htonl(header_send.seq_rand.u32);
 
         memcpy(buf_send, &header_send, HEADER_LEN);
-        // encrypt(buf_send, buf_header, global_buf_group_psk, AES_KEY_LEN);  //encrypt header with group PSK
-        // encrypt(buf_send+HEADER_LEN, buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
 
         nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
         for(i=0; i<nr_aes_block; i++)
             encrypt(buf_send+HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN, buf_load+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
 
         bool dup = should_pkt_dup(peer_table[bigger_id], buf_load);
-        //if(dup)
-        //    printf("should dup\n");
 
         //copy send packet to send thread
         if(pthread_mutex_lock(&global_send_mutex) != 0)
@@ -1715,7 +1698,6 @@ void* server_read(void *arg)
             global_send_buf[global_send_last].len = len;
             global_send_buf[global_send_last].timestamp = now;
             global_send_buf[global_send_last].seq = peer_table[dst_id]->local_seq;
-            // global_send_buf[global_send_last].dst_addr = peeraddr;
             memcpy(global_send_buf[global_send_last].buf_packet, buf_send, len);
             peer_table[dst_id]->pkt_index_array_now[peer_table[dst_id]->local_seq] = global_send_last;
         }
@@ -1728,7 +1710,6 @@ void* server_read(void *arg)
         continue;
     }
 
-    // free(peeraddr);
     free(buf_load);
     free(buf_send);
     pthread_cleanup_pop(0);
@@ -1817,9 +1798,6 @@ void* server_send(void *arg)
                     }
                 }
 
-                // memcpy(peeraddr, global_send_buf[global_send_first].dst_addr, sizeof(struct sockaddr_in));
-                // INFO("sendto forwarder_id: %d.%d", forwarder_id/256, forwarder_id%256);
-
                 int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
                 if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)&peeraddr, sizeof(peeraddr)) < 0 )
                     ERROR(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
@@ -1840,18 +1818,15 @@ void* server_send(void *arg)
                     continue;
                 }
 
-                // if(dst_id > src_id)
-                // {
                 // at the very beginning, both last_time are 0
-                    uint path_last_time = peer_table[dst_id]->path_array[i].last_time;
-                    uint peer_last_time = peer_table[dst_id]->last_time;
-                    if(abs(peer_last_time - path_last_time) > PATH_LIFE)
-                    {
-                        peer_table[dst_id]->path_array[i].peeraddr.sin_addr.s_addr = 0;
-                        // DEBUG("path timeout: %d, peer: %d, path: %d", i, peer_last_time, path_last_time);
-                        continue;
-                    }
-                // }
+                uint path_last_time = peer_table[dst_id]->path_array[i].last_time;
+                uint peer_last_time = peer_table[dst_id]->last_time;
+                if(abs(peer_last_time - path_last_time) > PATH_LIFE)
+                {
+                    peer_table[dst_id]->path_array[i].peeraddr.sin_addr.s_addr = 0;
+                    // DEBUG("path timeout: %d, peer: %d, path: %d", i, peer_last_time, path_last_time);
+                    continue;
+                }
 
                 if(forward)
                 {
@@ -1864,9 +1839,6 @@ void* server_send(void *arg)
                     }
                 }
 
-                // DEBUG("sendto path: %d", i);
-
-                // memcpy(&peeraddr, global_send_buf[global_send_first].dst_addr, sizeof(struct sockaddr_in));
                 int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
                 if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)&peeraddr, sizeof(peeraddr)) < 0 )
                     ERROR(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
@@ -1908,17 +1880,11 @@ void* server_send(void *arg)
                 ERROR(errno, "pthread_spin_unlock");
                 continue;
             }
-
-            // DEBUG("dup send packet");
-            // len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
-            // if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)peeraddr, sizeof(*peeraddr)) < 0 )
-            //     ERROR(errno, "tunif %s sendto dst_id %d.%d socket error when dup", global_tunif.name, dst_id/256, dst_id%256);
         }
 
         continue;
     }
 
-    // free(peeraddr);
     free(buf_send);
     pthread_cleanup_pop(0);
     return NULL;
@@ -1999,7 +1965,6 @@ void* server_recv(void *arg)
         decrypt(buf_header, buf_recv, global_buf_group_psk, AES_KEY_LEN);  //decrypt header with group PSK
         memcpy(&header_recv, buf_header, HEADER_LEN);
         memcpy(&header_send, buf_header, HEADER_LEN);
-        //header_recv.time = ntohl(header_recv.time);
 
         header_recv.time_magic.u32 = ntohl(header_recv.time_magic.u32);
         if(header_recv.time_magic.bit.magic != HEADER_MAGIC)
@@ -2009,8 +1974,6 @@ void* server_recv(void *arg)
         }
 
         header_recv.ttl_pi_sd.u16 = ntohs(header_recv.ttl_pi_sd.u16);
-        // DEBUG("header_recv:pi_a: %d", header_recv.ttl_pi_sd.bit.pi_a);
-        // DEBUG("header_recv:pi_b: %d", header_recv.ttl_pi_sd.bit.pi_b);
         uint pi = (header_recv.ttl_pi_sd.bit.pi_a << 2) + header_recv.ttl_pi_sd.bit.pi_b;
         
         dst_id = ntohs(header_recv.dst_id);
@@ -2023,7 +1986,7 @@ void* server_recv(void *arg)
                 global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, bigger_id/256, bigger_id%256);
             continue;
         }
-        //if(bigger_id != global_self_id && NULL == peer_table[bigger_id])
+
         if(src_id == 0 || src_id == 1 || src_id == global_self_id)
         {
             DEBUG("tunif %s received packet from %d.%d to %d.%d: invalid src_id!", 
@@ -2065,8 +2028,6 @@ void* server_recv(void *arg)
         header_recv.seq_rand.u32 = ntohl(header_recv.seq_rand.u32);
         uint32_t pkt_time = header_recv.time_magic.bit.time;
         uint32_t pkt_seq = header_recv.seq_rand.bit.seq;
-        // INFO("recv pkt_time: %d", pkt_time);
-        // INFO("recv pkt_seq: %d", pkt_seq);
 
         // todo: may attack here
         if(!(peer_table[src_id]->restricted))
@@ -2135,7 +2096,6 @@ void* server_recv(void *arg)
                 ip_dnat(buf_load, daddr);
             }
 
-            // DEBUG("should write now");
             // copy write packet to write thread
             if(pthread_mutex_lock(&global_write_mutex) != 0)
             {
@@ -2155,7 +2115,6 @@ void* server_recv(void *arg)
             global_write_buf[global_write_last].dst_id = dst_id;
             global_write_buf[global_write_last].write_fd = global_tunfd;
             global_write_buf[global_write_last].len = len_load;
-            // global_write_buf[global_write_last].dst_addr = peeraddr;
             memcpy(global_write_buf[global_write_last].buf_packet, buf_load, len_load);
 
             pthread_cond_signal(&global_write_cond);
@@ -2199,10 +2158,7 @@ void* server_recv(void *arg)
             header_send.ttl_pi_sd.bit.ttl = ttl;
             header_send.ttl_pi_sd.u16 = htons(header_send.ttl_pi_sd.u16);
 
-            // after reducing ttl, should re-encrypt header and icv
             memcpy(buf_recv, &header_send, HEADER_LEN);
-            // encrypt(buf_recv, buf_header, global_buf_group_psk, AES_KEY_LEN);  //encrypt header with group PSK
-            // encrypt(buf_recv+HEADER_LEN, buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
 
             bool dup = should_pkt_dup(peer_table[bigger_id], NULL);
 
@@ -2229,7 +2185,6 @@ void* server_recv(void *arg)
             global_send_buf[global_send_last].send_fd = global_sockfd;
             global_send_buf[global_send_last].len = len;
             global_send_buf[global_send_last].dup = dup;
-            // global_send_buf[global_send_last].dst_addr = peeraddr;
             memcpy(global_send_buf[global_send_last].buf_packet, buf_recv, len);
             if(pkt_seq < SEQ_LEVEL_1)
             {
@@ -2254,7 +2209,6 @@ void* server_recv(void *arg)
         }
     }
 
-    // free(peeraddr);
     free(buf_recv);
     free(buf_load);
     free(buf_send);

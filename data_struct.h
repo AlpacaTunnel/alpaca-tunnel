@@ -87,7 +87,7 @@ int bit_array_clear(bit_array_t *ba, uint32_t index);
 int bit_array_get(bit_array_t *ba, uint32_t index);
 
 
-int binary_search(const int64_t arr[], int start, int end, int key);
+int binary_search(const int64_t arr[], int start, int end, int64_t key);
 void bubble_sort(int64_t arr[], int len);
 void merge_sort(int64_t arr[], int len);
 

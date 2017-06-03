@@ -1,10 +1,10 @@
 {
-    "mode": "client",
+    "mode": "server",
     "group": "caonima",
     "net": "10.17",
     "id": "16.1",
     "gateway": "1.1",
-    "forwarders": ["1.1", "1.4"],
+    "forwarders": ["1.1", "1.2"],
     "port": 0,
     "mtu": 1408,
     "log_level": "debug",
