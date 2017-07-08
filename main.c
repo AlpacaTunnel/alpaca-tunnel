@@ -23,7 +23,7 @@
 
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "4.0.3"
+#define VERSION         "4.1"
 
 /*
  * Config file path choose order:
@@ -119,9 +119,9 @@ static int global_sysroute_change = 0;
 static int global_secret_change = 0;
 static uint16_t global_self_id = 0;
 static uint global_pkt_cnt = 0;
-static pthread_spinlock_t global_stat_spin;
-static pthread_spinlock_t global_time_seq_spin;
-static pthread_spinlock_t global_tick_queue_spin;
+static pthread_mutex_t global_stat_lock;
+static pthread_mutex_t global_time_seq_lock;
+static pthread_mutex_t global_tick_queue_lock;
 
 //in network byte order.
 static if_info_t global_tunif;
@@ -203,34 +203,34 @@ void clean_lock_all(void *arg)
     return;
 
     //no thread should exit during process runing, so I put all unlock here, just for future debug.
-    pthread_spin_unlock(&global_stat_spin);
+    pthread_mutex_unlock(&global_stat_lock);
     pthread_mutex_unlock(&global_write_mutex);
     pthread_mutex_unlock(&global_send_mutex);
-    unlock_route_spin();
+    unlock_route_mutex();
 
     return;
 }
 
 int init_global_values()
 {
-    if(init_route_spin() < 0)
+    if(init_route_lock() < 0)
     {
-        ERROR(0, "init_route_spin");
+        ERROR(0, "init_route_lock");
         return -1;
     }
-    if(pthread_spin_init(&global_stat_spin, PTHREAD_PROCESS_PRIVATE) != 0)
+    if(pthread_mutex_init(&global_stat_lock, NULL) != 0)
     {
-        ERROR(errno, "pthread_spin_init");
+        ERROR(errno, "pthread_mutex_init");
         return -1;
     }
-    if(pthread_spin_init(&global_time_seq_spin, PTHREAD_PROCESS_PRIVATE) != 0)
+    if(pthread_mutex_init(&global_time_seq_lock, NULL) != 0)
     {
-        ERROR(errno, "pthread_spin_init");
+        ERROR(errno, "pthread_mutex_init");
         return -1;
     }
-    if(pthread_spin_init(&global_tick_queue_spin, PTHREAD_PROCESS_PRIVATE) != 0)
+    if(pthread_mutex_init(&global_tick_queue_lock, NULL) != 0)
     {
-        ERROR(errno, "pthread_spin_init");
+        ERROR(errno, "pthread_mutex_init");
         return -1;
     }
     if(pthread_mutex_init(&global_write_mutex, NULL) != 0)
@@ -332,10 +332,10 @@ int init_global_values()
 
 int destory_global_values()
 {
-    destroy_route_spin();
-    pthread_spin_destroy(&global_stat_spin);
-    pthread_spin_destroy(&global_time_seq_spin);
-    pthread_spin_destroy(&global_tick_queue_spin);
+    destroy_route_lock();
+    pthread_mutex_destroy(&global_stat_lock);
+    pthread_mutex_destroy(&global_time_seq_lock);
+    pthread_mutex_destroy(&global_tick_queue_lock);
     pthread_mutex_destroy(&global_write_mutex);
     pthread_mutex_destroy(&global_send_mutex);
     pthread_cond_destroy(&global_write_cond);
@@ -381,6 +381,7 @@ int destory_global_values()
     return 0;
 }
 
+
 int main(int argc, char *argv[])
 {
     int opt;
@@ -419,8 +420,7 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-
-/******************* init global/main variables *******************/
+    /******************* init global/main variables *******************/
 
     srandom(time(NULL));
 
@@ -443,7 +443,7 @@ int main(int argc, char *argv[])
         goto _END;
 
 
-/******************* load json config *******************/
+    /******************* load json config *******************/
 
     int path_len;
     if('\0' == global_json_path[0])
@@ -496,7 +496,7 @@ int main(int argc, char *argv[])
     }
 
 
-/******************* set log level, model, group *******************/
+    /******************* set log level, model, group *******************/
 
     set_log_level(get_log_level(config.log_level));
 
@@ -548,7 +548,7 @@ int main(int argc, char *argv[])
     }
 
 
-/******************* bind UDP socket *******************/
+    /******************* bind UDP socket *******************/
 
     struct sockaddr_in servaddr;
     bzero(&servaddr, sizeof(servaddr));
@@ -564,7 +564,7 @@ int main(int argc, char *argv[])
     }
 
 
-/******************* get secret file *******************/
+    /******************* get secret file *******************/
 
     if(config.secret_file != NULL && config.secret_file[0] == '/')
         strcpy(global_secrets_path, config.secret_file);
@@ -603,7 +603,7 @@ int main(int argc, char *argv[])
     INFO("secrets_path: %s", global_secrets_path);
     
 
-/******************* load secret file *******************/
+    /******************* load secret file *******************/
 
     FILE *secrets_file = NULL;
     if((secrets_file = fopen(global_secrets_path, "r")) == NULL)
@@ -649,7 +649,7 @@ int main(int argc, char *argv[])
     }
 
 
-/******************* setup tunnel interface *******************/
+    /******************* setup tunnel interface *******************/
 
     // before bring tunnel interface up
     run_cmd_list(&config.pre_up_cmds);
@@ -799,7 +799,7 @@ int main(int argc, char *argv[])
     add_iptables_tcpmss(TCPMSS);
 
     
-/******************* start all working threads *******************/
+    /******************* start all working threads *******************/
 
     global_running = 1;
 
@@ -860,7 +860,7 @@ int main(int argc, char *argv[])
     }
 
 
-/******************* main thread sleeps during running *******************/
+    /******************* main thread sleeps during running *******************/
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
@@ -1158,17 +1158,17 @@ void* tick_queue(void *arg)
         {
             pq_sort(&global_tick_queue, 0);
 
-            if(pthread_spin_lock(&global_tick_queue_spin) != 0)
+            if(pthread_mutex_lock(&global_tick_queue_lock) != 0)
             {
-                ERROR(errno, "pthread_spin_lock");
+                ERROR(errno, "pthread_mutex_lock");
                 continue;
             }
 
             global_tick_queue.sorted = 1;
             
-            if(pthread_spin_unlock(&global_tick_queue_spin) != 0)
+            if(pthread_mutex_unlock(&global_tick_queue_lock) != 0)
             {
-                ERROR(errno, "pthread_spin_unlock");
+                ERROR(errno, "pthread_mutex_unlock");
                 continue;
             }
         }
@@ -1193,9 +1193,9 @@ void* tick_queue(void *arg)
 
             if(pq_deq(&global_tick_queue, &node2) == 0)
             {
-                if(pthread_spin_lock(&global_tick_queue_spin) != 0)
+                if(pthread_mutex_lock(&global_tick_queue_lock) != 0)
                 {
-                    ERROR(errno, "pthread_spin_lock");
+                    ERROR(errno, "pthread_mutex_lock");
                     continue;
                 }
 
@@ -1228,9 +1228,9 @@ void* tick_queue(void *arg)
 
                 ll_array_return(global_tick_list_head, node1);
 
-                if(pthread_spin_unlock(&global_tick_queue_spin) != 0)
+                if(pthread_mutex_unlock(&global_tick_queue_lock) != 0)
                 {
-                    ERROR(errno, "pthread_spin_unlock");
+                    ERROR(errno, "pthread_mutex_unlock");
                     continue;
                 }
             }
@@ -1428,9 +1428,9 @@ void* server_reset_stat(void *arg)
             peer_profile_t *p = peer_table[i];
             if(p != NULL)
             {
-                if(pthread_spin_lock(&global_stat_spin) != 0)
+                if(pthread_mutex_lock(&global_stat_lock) != 0)
                 {
-                    ERROR(errno, "pthread_spin_lock");
+                    ERROR(errno, "pthread_mutex_lock");
                     continue;
                 }
                 //if(pre != global_pkt_cnt)
@@ -1449,9 +1449,9 @@ void* server_reset_stat(void *arg)
                     p->flow_src->jump_cnt = 0;
                     INFO("jump status count reset.");
                 }
-                if(pthread_spin_unlock(&global_stat_spin) != 0)
+                if(pthread_mutex_unlock(&global_stat_lock) != 0)
                 {
-                    ERROR(errno, "pthread_spin_unlock");
+                    ERROR(errno, "pthread_mutex_unlock");
                     continue;
                 }
             }
@@ -1638,9 +1638,9 @@ void* server_read(void *arg)
         header_send.time_magic.bit.time = now;
         header_send.time_magic.bit.magic = HEADER_MAGIC;
         header_send.time_magic.u32 = htonl(header_send.time_magic.u32);
-        if(pthread_spin_lock(&global_time_seq_spin) != 0)
+        if(pthread_mutex_lock(&global_time_seq_lock) != 0)
         {
-            ERROR(errno, "pthread_spin_lock");
+            ERROR(errno, "pthread_mutex_lock");
             continue;
         }
         if(global_local_time == now)
@@ -1654,9 +1654,9 @@ void* server_read(void *arg)
             peer_table[dst_id]->pkt_index_array_now = tmp_index;
         }
         header_send.seq_rand.bit.seq = peer_table[dst_id]->local_seq;
-        if(pthread_spin_unlock(&global_time_seq_spin) != 0)
+        if(pthread_mutex_unlock(&global_time_seq_lock) != 0)
         {
-            ERROR(errno, "pthread_spin_unlock");
+            ERROR(errno, "pthread_mutex_unlock");
             continue;
         }
 
@@ -1847,9 +1847,9 @@ void* server_send(void *arg)
 
         if(dup)  // add to tick_queue for delay
         {
-            if(pthread_spin_lock(&global_tick_queue_spin) != 0)
+            if(pthread_mutex_lock(&global_tick_queue_lock) != 0)
             {
-                ERROR(errno, "pthread_spin_lock");
+                ERROR(errno, "pthread_mutex_lock");
                 continue;
             }
 
@@ -1875,9 +1875,9 @@ void* server_send(void *arg)
                     DEBUG("append delay_pkt into tick_queue failed");
             }
             
-            if(pthread_spin_unlock(&global_tick_queue_spin) != 0)
+            if(pthread_mutex_unlock(&global_tick_queue_lock) != 0)
             {
-                ERROR(errno, "pthread_spin_unlock");
+                ERROR(errno, "pthread_mutex_unlock");
                 continue;
             }
         }
@@ -2038,15 +2038,15 @@ void* server_recv(void *arg)
         peer_table[src_id]->last_time = pkt_time;
 
 
-        if(pthread_spin_lock(&global_stat_spin) != 0)
+        if(pthread_mutex_lock(&global_stat_lock) != 0)
         {
-            ERROR(errno, "pthread_spin_lock");
+            ERROR(errno, "pthread_mutex_lock");
             continue;
         }
         int fs = flow_filter(pkt_time, pkt_seq, src_id, dst_id, peer_table);
-        if(pthread_spin_unlock(&global_stat_spin) != 0)
+        if(pthread_mutex_unlock(&global_stat_lock) != 0)
         {
-            ERROR(errno, "pthread_spin_unlock");
+            ERROR(errno, "pthread_mutex_unlock");
             continue;
         }
         if(fs == -2)

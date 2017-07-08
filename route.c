@@ -15,56 +15,56 @@
 
 #define NLMSG_TAIL(nmsg) ((struct rtattr *) (((void *) (nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))
 
-static pthread_spinlock_t route_spin;
-static int route_spin_inited = 0;
+static pthread_mutex_t route_lock;
+static int route_lock_inited = 0;
 
 //rt_tb_index points to the latest route_item_t
 static int rt_tb_index = 0;
 static route_item_t route_table[RT_TB_SIZE];
 
-int init_route_spin()
+int init_route_lock()
 {
-    if(0 == route_spin_inited)
+    if(0 == route_lock_inited)
     {
-        if(pthread_spin_init(&route_spin, PTHREAD_PROCESS_PRIVATE) != 0)
+        if(pthread_mutex_init(&route_lock, NULL) != 0)
         {
-            ERROR(errno, "pthread_spin_init");
+            ERROR(errno, "pthread_mutex_init");
             return -1;
         }
-        route_spin_inited = 1;
+        route_lock_inited = 1;
     }
     return 0;
 }
 
-int destroy_route_spin()
+int destroy_route_lock()
 {
-    if(1 == route_spin_inited)
+    if(1 == route_lock_inited)
     {
-        if(pthread_spin_destroy(&route_spin) != 0)
+        if(pthread_mutex_destroy(&route_lock) != 0)
         {
-            ERROR(errno, "pthread_spin_destroy");
+            ERROR(errno, "pthread_mutex_destroy");
             return -1;
         }
-        route_spin_inited = 0;
+        route_lock_inited = 0;
     }
     return 0;
 }
 
-int lock_route_spin()
+int lock_route_mutex()
 {
-    if(pthread_spin_lock(&route_spin) != 0)
+    if(pthread_mutex_lock(&route_lock) != 0)
     {
-        ERROR(errno, "pthread_spin_lock");
+        ERROR(errno, "pthread_mutex_lock");
         return -1;
     }
     return 0;
 }
 
-int unlock_route_spin()
+int unlock_route_mutex()
 {
-    if(pthread_spin_unlock(&route_spin) != 0)
+    if(pthread_mutex_unlock(&route_lock) != 0)
     {
-        ERROR(errno, "pthread_spin_unlock");
+        ERROR(errno, "pthread_mutex_unlock");
         return -1;
     }
     return 0;
@@ -72,9 +72,9 @@ int unlock_route_spin()
 
 int clear_route()
 {
-    if(pthread_spin_lock(&route_spin) != 0)
+    if(pthread_mutex_lock(&route_lock) != 0)
     {
-        ERROR(errno, "pthread_spin_lock");
+        ERROR(errno, "pthread_mutex_lock");
         return -1;
     }
 
@@ -87,9 +87,9 @@ int clear_route()
     }
     rt_tb_index = 0;
     
-    if(pthread_spin_unlock(&route_spin) != 0)
+    if(pthread_mutex_unlock(&route_lock) != 0)
     {
-        ERROR(errno, "pthread_spin_unlock");
+        ERROR(errno, "pthread_mutex_unlock");
         return -1;
     }
 
@@ -98,9 +98,9 @@ int clear_route()
 
 int add_route(uint16_t next_hop_id, uint32_t ip_dst, uint32_t ip_src)
 {
-    if(pthread_spin_lock(&route_spin) != 0)
+    if(pthread_mutex_lock(&route_lock) != 0)
     {
-        ERROR(errno, "pthread_spin_lock");
+        ERROR(errno, "pthread_mutex_lock");
         return -1;
     }
 
@@ -109,9 +109,9 @@ int add_route(uint16_t next_hop_id, uint32_t ip_dst, uint32_t ip_src)
     route_table[rt_tb_index].ip_dst = ip_dst;
     route_table[rt_tb_index].ip_src = ip_src;
 
-    if(pthread_spin_unlock(&route_spin) != 0)
+    if(pthread_mutex_unlock(&route_lock) != 0)
     {
-        ERROR(errno, "pthread_spin_unlock");
+        ERROR(errno, "pthread_mutex_unlock");
         return -1;
     }
 
@@ -197,9 +197,9 @@ int clear_if_info(if_info_t *info)
     if(NULL == info)
         return 0;
     
-    if(pthread_spin_lock(&route_spin) != 0)
+    if(pthread_mutex_lock(&route_lock) != 0)
     {
-        ERROR(errno, "pthread_spin_lock");
+        ERROR(errno, "pthread_mutex_lock");
         return -1;
     }
 
@@ -211,9 +211,9 @@ int clear_if_info(if_info_t *info)
         free(p);
     }
 
-    if(pthread_spin_unlock(&route_spin) != 0)
+    if(pthread_mutex_unlock(&route_lock) != 0)
     {
-        ERROR(errno, "pthread_spin_unlock");
+        ERROR(errno, "pthread_mutex_unlock");
         return -1;
     }
 
@@ -222,9 +222,9 @@ int clear_if_info(if_info_t *info)
 
 int collect_if_info(if_info_t **first)
 {
-    if(pthread_spin_lock(&route_spin) != 0)
+    if(pthread_mutex_lock(&route_lock) != 0)
     {
-        ERROR(errno, "pthread_spin_lock");
+        ERROR(errno, "pthread_mutex_lock");
         return -1;
     }
 
@@ -277,9 +277,9 @@ int collect_if_info(if_info_t **first)
 
     freeifaddrs(ifaddr);
 
-    if(pthread_spin_unlock(&route_spin) != 0)
+    if(pthread_mutex_unlock(&route_lock) != 0)
     {
-        ERROR(errno, "pthread_spin_unlock");
+        ERROR(errno, "pthread_mutex_unlock");
         return -1;
     }
 

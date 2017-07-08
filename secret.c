@@ -237,7 +237,7 @@ peer_profile_t** init_peer_table(FILE *secrets_file, int max_id)
 }
 
 
-//there should be lock handle, such as global_stat_spin, but I just don't want to implement it now.
+//there should be lock handle, such as global_stat_lock, but I just don't want to implement it now.
 int update_peer_table(peer_profile_t** peer_table, FILE *secrets_file, int max_id)
 {
     if(NULL == peer_table || NULL == secrets_file)

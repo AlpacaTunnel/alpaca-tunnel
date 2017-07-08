@@ -58,14 +58,14 @@ typedef struct
 
 #define RT_TB_SIZE 1024
 
-int lock_route_spin();
-int unlock_route_spin();
+int lock_route_mutex();
+int unlock_route_mutex();
 
 //don't call init/destroy in multi threads!
 //must call at first
-int init_route_spin();
+int init_route_lock();
 //must call at the end
-int destroy_route_spin();
+int destroy_route_lock();
 
 int clear_route();
 int add_route(uint16_t next_hop_id, uint32_t ip_dst, uint32_t ip_src);
