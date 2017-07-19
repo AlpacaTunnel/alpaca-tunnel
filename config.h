@@ -1,11 +1,13 @@
+/*
+ * handle the json config file
+ */
+
 #ifndef CONFIG_H_
 #define CONFIG_H_
 
-/* handle the json config file */
-
 #include <stdint.h>
 
-#include "data_struct.h"
+#include "data-struct/data-struct.h"
 
 //reserved ID: 0.0, 0.1, 255.255, any server/client cann't use.
 #define MAX_ID 65535
@@ -38,13 +40,14 @@ typedef struct
     char * secret_file;
     int forwarder_nr;
     chnroute_t * chnroute;
-    ll_node_t * forwarders;   // a list of forwarder IDs, will send outter UDP to them
-    ll_node_t * local_routes;   // a list of networks or hosts
-    ll_node_t * use_dns;  // a list of dns servers, not used now
-    ll_node_t * pre_up_cmds;
-    ll_node_t * post_up_cmds;
-    ll_node_t * pre_down_cmds;
-    ll_node_t * post_down_cmds;
+    queue_t * forwarders;   // a list of forwarder IDs, will send outter UDP to them
+    queue_t * local_routes;   // a list of networks or hosts
+    queue_t * local_routes_bakup;   // backup routes, restore when exit()
+    queue_t * use_dns;  // a list of dns servers, not used now
+    queue_t * pre_up_cmds;
+    queue_t * post_up_cmds;
+    queue_t * pre_down_cmds;
+    queue_t * post_down_cmds;
 } config_t;
 
 int free_config(config_t * configure);

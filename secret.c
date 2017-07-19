@@ -8,6 +8,7 @@
 #include "log.h"
 #include "ip.h"
 
+
 int shrink_line(char *line);
 bool peer_equal(peer_profile_t * peer1, peer_profile_t * peer2);
 
@@ -83,7 +84,7 @@ peer_profile_t* add_peer()
     else
         bzero(p->flow_src, sizeof(flow_profile_t));
 
-    p->flow_src->ba_pre = bit_array_create(SEQ_LEVEL_1);
+    p->flow_src->ba_pre = bit_array_init(SEQ_LEVEL_1);
     if(p->flow_src->ba_pre == NULL)
     {
         ERROR(errno, "add_peer: malloc failed");
@@ -93,7 +94,7 @@ peer_profile_t* add_peer()
     else
         bit_array_clearall(p->flow_src->ba_pre);
 
-    p->flow_src->ba_now = bit_array_create(SEQ_LEVEL_1);
+    p->flow_src->ba_now = bit_array_init(SEQ_LEVEL_1);
     if(p->flow_src->ba_now == NULL)
     {
         ERROR(errno, "add_peer: malloc failed");

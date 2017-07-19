@@ -11,19 +11,17 @@
 #include "aes.h"
 #include "route.h"
 #include "log.h"
-#include "data_struct.h"
 #include "secret.h"
 #include "ip.h"
 #include "tunnel.h"
 #include "header.h"
 #include "config.h"
-#include "bool.h"
 #include "cmd_helper.h"
-#include "timer.h"
 
+#include "data-struct/data-struct.h"
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "4.1"
+#define VERSION         "4.2"
 
 /*
  * Config file path choose order:
@@ -100,19 +98,43 @@ typedef struct
     byte * buf_packet;
 } packet_profile_t;
 
+packet_profile_t * new_pkt()
+{
+    packet_profile_t * pkt = (packet_profile_t *)malloc(sizeof(packet_profile_t));
+    if(pkt == NULL)
+    {
+        perror("new_pkt: malloc");
+        return NULL;
+    }
 
-static packet_profile_t * global_write_buf = NULL;
-static packet_profile_t * global_tick_queue_buf = NULL;
-static ll_node_t * global_tick_list_head = NULL;
-static packet_profile_t * global_send_buf  = NULL;
-static int global_write_first = 0;
-static int global_write_last  = 0;
-static int global_send_first  = 0;
-static int global_send_last   = 0;
-static pthread_mutex_t global_write_mutex;
-static pthread_mutex_t global_send_mutex;
-static pthread_cond_t  global_write_cond;
-static pthread_cond_t  global_send_cond;
+    bzero(pkt, sizeof(packet_profile_t));
+
+    pkt->buf_packet = (byte *)malloc(ETH_MTU);
+    if(pkt->buf_packet == NULL)
+    {
+        perror("new_pkt: malloc");
+        free(pkt);
+        return NULL;
+    }
+
+    return pkt;
+}
+
+void delete_pkt(packet_profile_t * pkt)
+{
+    if(pkt == NULL)
+        return;
+
+    if(pkt->buf_packet)
+        free(pkt->buf_packet);
+
+    free(pkt);
+}
+
+
+static queue_t * global_send_q = NULL;
+static queue_t * global_write_q = NULL;
+
 
 static int global_running = 0;
 static int global_sysroute_change = 0;
@@ -121,7 +143,7 @@ static uint16_t global_self_id = 0;
 static uint global_pkt_cnt = 0;
 static pthread_mutex_t global_stat_lock;
 static pthread_mutex_t global_time_seq_lock;
-static pthread_mutex_t global_tick_queue_lock;
+// static pthread_mutex_t global_tick_queue_lock;
 
 //in network byte order.
 static if_info_t global_tunif;
@@ -141,7 +163,7 @@ static uint32_t global_local_time;
 static int64_t* global_trusted_ip = NULL;  // int64_t can hold uint32_t(IPv4 address)
 static int global_trusted_ip_cnt = 0;
 
-static prior_q_t global_tick_queue;
+// static queue_t global_tick_queue;
 
 static uint16_t * global_forwarders = NULL;
 static int global_forwarder_nr = 0;
@@ -204,8 +226,6 @@ void clean_lock_all(void *arg)
 
     //no thread should exit during process runing, so I put all unlock here, just for future debug.
     pthread_mutex_unlock(&global_stat_lock);
-    pthread_mutex_unlock(&global_write_mutex);
-    pthread_mutex_unlock(&global_send_mutex);
     unlock_route_mutex();
 
     return;
@@ -228,104 +248,13 @@ int init_global_values()
         ERROR(errno, "pthread_mutex_init");
         return -1;
     }
-    if(pthread_mutex_init(&global_tick_queue_lock, NULL) != 0)
-    {
-        ERROR(errno, "pthread_mutex_init");
-        return -1;
-    }
-    if(pthread_mutex_init(&global_write_mutex, NULL) != 0)
-    {
-        ERROR(errno, "pthread_mutex_init");
-        return -1;
-    }
-    if(pthread_mutex_init(&global_send_mutex, NULL) != 0)
-    {
-        ERROR(errno, "pthread_mutex_init");
-        return -1;
-    }
-    if(pthread_cond_init(&global_write_cond, NULL) != 0)
-    {
-        ERROR(errno, "pthread_cond_init");
-        return -1;
-    }
-    if(pthread_cond_init(&global_send_cond, NULL) != 0)
-    {
-        ERROR(errno, "pthread_cond_init");
-        return -1;
-    }
 
-    if(pq_init(&global_tick_queue, TICK_QUEUE_SIZE) == -1)
-    {
-        ERROR(0, "init_prior_q");
-        return -1;
-    }
+    global_send_q = queue_init(QUEUE_TYPE_FIFO);
+    global_write_q = queue_init(QUEUE_TYPE_FIFO);
 
-    global_write_buf = (packet_profile_t *)malloc(WRITE_BUF_SIZE * sizeof(packet_profile_t));
-    if(global_write_buf == NULL)
-    {
-        ERROR(errno, "malloc failed: global_write_buf");
-        return -1;
-    }
-    else
-    {
-        bzero(global_write_buf, WRITE_BUF_SIZE * sizeof(packet_profile_t));
-        int i;
-        for(i=0; i<WRITE_BUF_SIZE; i++)
-        {
-            global_write_buf[i].buf_packet = (byte *)malloc(ETH_MTU);
-            if(global_write_buf[i].buf_packet == NULL)
-            {
-                ERROR(errno, "malloc failed: global_write_buf");
-                return -1;
-            }
-        }
-    }
+    // ll_array_init(&global_tick_list_head, TICK_QUEUE_SIZE);
 
-    global_send_buf = (packet_profile_t *)malloc(SEND_BUF_SIZE * sizeof(packet_profile_t));
-    if(global_send_buf == NULL)
-    {
-        ERROR(errno, "malloc failed: global_send_buf");
-        return -1;
-    }
-    else
-    {
-        bzero(global_send_buf, SEND_BUF_SIZE * sizeof(packet_profile_t));
-        int i;
-        for(i=0; i<SEND_BUF_SIZE; i++)
-        {
-            global_send_buf[i].buf_packet = (byte *)malloc(ETH_MTU);
-            if(global_send_buf[i].buf_packet == NULL)
-            {
-                ERROR(errno, "malloc failed: global_send_buf");
-                return -1;
-            }
-        }
-    }
-
-    global_tick_queue_buf = (packet_profile_t *)malloc(TICK_QUEUE_SIZE * sizeof(packet_profile_t));
-    if(global_tick_queue_buf == NULL)
-    {
-        ERROR(errno, "malloc failed: global_tick_queue_buf");
-        return -1;
-    }
-    else
-    {
-        bzero(global_tick_queue_buf, TICK_QUEUE_SIZE * sizeof(packet_profile_t));
-        int i;
-        for(i=0; i<TICK_QUEUE_SIZE; i++)
-        {
-            global_tick_queue_buf[i].buf_packet = (byte *)malloc(ETH_MTU);
-            if(global_tick_queue_buf[i].buf_packet == NULL)
-            {
-                ERROR(errno, "malloc failed: global_tick_queue_buf");
-                return -1;
-            }
-        }
-    }
-
-    ll_array_init(&global_tick_list_head, TICK_QUEUE_SIZE);
-
-    ll_array_load_data(global_tick_list_head, TICK_QUEUE_SIZE, (uintptr_t)global_tick_queue_buf, (uint)sizeof(packet_profile_t));
+    // ll_array_load_data(global_tick_list_head, TICK_QUEUE_SIZE, (uintptr_t)global_tick_queue_buf, (uint)sizeof(packet_profile_t));
     
     return 0;
 }
@@ -335,48 +264,11 @@ int destory_global_values()
     destroy_route_lock();
     pthread_mutex_destroy(&global_stat_lock);
     pthread_mutex_destroy(&global_time_seq_lock);
-    pthread_mutex_destroy(&global_tick_queue_lock);
-    pthread_mutex_destroy(&global_write_mutex);
-    pthread_mutex_destroy(&global_send_mutex);
-    pthread_cond_destroy(&global_write_cond);
-    pthread_cond_destroy(&global_send_cond);
 
-    pq_destory(&global_tick_queue);
+    queue_destroy(global_send_q, NULL);
+    queue_destroy(global_write_q, NULL);
 
-    if(global_write_buf != NULL)
-    {
-        int i;
-        for(i=0; i<WRITE_BUF_SIZE; i++)
-        {
-            if(global_write_buf[i].buf_packet != NULL)
-                free(global_write_buf[i].buf_packet);
-        }
-        free(global_write_buf);
-    }
-
-    if(global_send_buf != NULL)
-    {
-        int i;
-        for(i=0; i<SEND_BUF_SIZE; i++)
-        {
-            if(global_send_buf[i].buf_packet != NULL)
-                free(global_send_buf[i].buf_packet);
-        }
-        free(global_send_buf);
-    }
-
-    if(global_tick_queue_buf != NULL)
-    {
-        int i;
-        for(i=0; i<TICK_QUEUE_SIZE; i++)
-        {
-            if(global_tick_queue_buf[i].buf_packet != NULL)
-                free(global_tick_queue_buf[i].buf_packet);
-        }
-        free(global_tick_queue_buf);
-    }
-
-    ll_array_destory(global_tick_list_head);
+    // ll_array_destory(global_tick_list_head);
 
     return 0;
 }
@@ -530,21 +422,16 @@ int main(int argc, char *argv[])
         }
     }
 
-    if(!ll_is_empty(config.forwarders))
+    global_forwarders = (uint16_t *)malloc(config.forwarder_nr * sizeof(uint16_t));
+    global_forwarder_nr = config.forwarder_nr;
+    int forwarder_nr = 0;
+    while(!queue_is_empty(config.forwarders))
     {
-        global_forwarders = (uint16_t *)malloc(config.forwarder_nr * sizeof(uint16_t));
-        global_forwarder_nr = config.forwarder_nr;
-
-        ll_node_t * saveptr = NULL;
-        char * forwarder_str = (char *)ll_get_next(config.forwarders, &saveptr);
-        int forwarder_nr = 0;
-        while(forwarder_str != NULL)
-        {
-            int forwarder_id = inet_ptons(forwarder_str);
-            global_forwarders[forwarder_nr] = forwarder_id;
-            forwarder_str = (char *)ll_get_next(NULL, &saveptr);
-            forwarder_nr++;
-        }
+        char * forwarder_str = NULL;
+        queue_get(config.forwarders, (void **)&forwarder_str, NULL);
+        int forwarder_id = inet_ptons(forwarder_str);
+        global_forwarders[forwarder_nr] = forwarder_id;
+        forwarder_nr++;
     }
 
 
@@ -652,7 +539,7 @@ int main(int argc, char *argv[])
     /******************* setup tunnel interface *******************/
 
     // before bring tunnel interface up
-    run_cmd_list(&config.pre_up_cmds);
+    run_cmd_list(config.pre_up_cmds);
 
     char tun_name[IFNAMSIZ] = "\0";
     if( (global_tunfd = tun_alloc(tun_name)) < 0 )
@@ -712,7 +599,7 @@ int main(int argc, char *argv[])
     }
     
     // after bring tunnel interface up
-    run_cmd_list(&config.post_up_cmds);
+    run_cmd_list(config.post_up_cmds);
 
     enable_ip_forward();
 
@@ -730,7 +617,6 @@ int main(int argc, char *argv[])
             strcpy(chnroute_path, global_config_dir);
             strcat(chnroute_path, config.chnroute->data);
         }
-
 
         uint32_t gw_ip = 0;
         int gw_dev = 0;
@@ -779,13 +665,12 @@ int main(int argc, char *argv[])
             }
         }
 
-        ll_node_t * saveptr = NULL;
-        char * local_route = (char *)ll_get_next(config.local_routes, &saveptr);
-        while(local_route != NULL)
+        while(!queue_is_empty(config.local_routes))
         {
+            char * local_route;
+            queue_get(config.local_routes, (void **)&local_route, NULL);
             add_iproute(local_route, default_gw_ip, default_gw_dev, "default");
             DEBUG("add local_route: %s to table default", local_route);
-            local_route = (char *)ll_get_next(NULL, &saveptr);
         }
     }
 
@@ -803,61 +688,60 @@ int main(int argc, char *argv[])
 
     global_running = 1;
 
-    int rc1=0, rc2=0, rc3=0, rc4=0, rc5=0, rc6=0, rc7=0, rc8=0, rc9=0, rc11=0;
     pthread_t tid1=0, tid2=0, tid3=0, tid4=0, tid5=0, tid6=0, tid7=0, tid8=0, tid9=0, tid11=0;
 
-    if( (rc1 = pthread_create(&tid1, NULL, server_recv, peer_table)) != 0 )
+    if(pthread_create(&tid1, NULL, server_recv, peer_table) != 0)
     {
         ERROR(errno, "pthread_error: create rc1"); 
         goto _END;
     }
-    if( (rc2 = pthread_create(&tid2, NULL, server_read, peer_table)) != 0 )
+    if(pthread_create(&tid2, NULL, server_read, peer_table) != 0)
     {
         ERROR(errno, "pthread_error: create rc2"); 
         goto _END;
     }
-    if( (rc3 = pthread_create(&tid3, NULL, server_write, peer_table)) != 0 )
+    if(pthread_create(&tid3, NULL, server_write, peer_table) != 0)
     {
         ERROR(errno, "pthread_error: create rc3"); 
         goto _END;
     }
-    if( (rc4 = pthread_create(&tid4, NULL, server_send, peer_table)) != 0 )
+    if(pthread_create(&tid4, NULL, server_send, peer_table) != 0)
     {
         ERROR(errno, "pthread_error: create rc4"); 
         goto _END;
     }
 
-    if( (rc5 = pthread_create(&tid5, NULL, watch_link_route, NULL)) != 0 )
+    if(pthread_create(&tid5, NULL, watch_link_route, NULL) != 0)
     {
         ERROR(errno, "pthread_error: create rc5"); 
         goto _END;
     }
-    if( (rc6 = pthread_create(&tid6, NULL, reset_link_route, NULL)) != 0 )
+    if(pthread_create(&tid6, NULL, reset_link_route, NULL) != 0)
     {
         ERROR(errno, "pthread_error: create rc6"); 
         goto _END;
     }
-    if( (rc7 = pthread_create(&tid7, NULL, watch_secret, NULL)) != 0 )
+    if(pthread_create(&tid7, NULL, watch_secret, NULL) != 0)
     {
         ERROR(errno, "pthread_error: create rc7"); 
         goto _END;
     }
-    if( (rc8 = pthread_create(&tid8, NULL, update_secret, peer_table)) != 0 )
+    if(pthread_create(&tid8, NULL, update_secret, peer_table) != 0)
     {
         ERROR(errno, "pthread_error: create rc8"); 
         goto _END;
     }
-    if( (rc9 = pthread_create(&tid9, NULL, server_reset_stat, peer_table)) != 0 )
+    if(pthread_create(&tid9, NULL, server_reset_stat, peer_table) != 0)
     {
         ERROR(errno, "pthread_error: create rc9"); 
         goto _END;
     }
 
-    if( (rc11 = pthread_create(&tid11, NULL, tick_queue, NULL)) != 0 )
-    {
-        ERROR(errno, "pthread_error: create rc11"); 
-        goto _END;
-    }
+    // if(pthread_create(&tid11, NULL, tick_queue, NULL) != 0)
+    // {
+    //     ERROR(errno, "pthread_error: create rc11"); 
+    //     goto _END;
+    // }
 
 
     /******************* main thread sleeps during running *******************/
@@ -914,13 +798,12 @@ _END:
                 del_iproute(server_ip_str, "default");
             }
 
-        ll_node_t * saveptr = NULL;
-        char * local_route = (char *)ll_get_next(config.local_routes, &saveptr);
-        while(local_route != NULL)
+        while(!queue_is_empty(config.local_routes_bakup))
         {
+            char * local_route;
+            queue_get(config.local_routes_bakup, (void **)&local_route, NULL);
             del_iproute(local_route, "default");
-            DEBUG("del local_route: %s from table default", local_route);
-            local_route = (char *)ll_get_next(NULL, &saveptr);
+            DEBUG("add local_route: %s to table default", local_route);
         }
     }
 
@@ -937,13 +820,13 @@ _END:
     del_iptables_tcpmss(TCPMSS);
 
     // before turn tunnel interface down 
-    run_cmd_list(&config.pre_down_cmds);
+    run_cmd_list(config.pre_down_cmds);
 
     // close the fd will delete the tunnel interface.
     close(global_tunfd);
 
     // after turn tunnel interface down 
-    run_cmd_list(&config.post_down_cmds);
+    run_cmd_list(config.post_down_cmds);
 
     free_config(&config);
 
@@ -1101,12 +984,14 @@ uint16_t get_dst_id(uint32_t ip_dst, uint32_t ip_src)
     return next_hop_id;
 }
 
+
+/*
 void* tick_queue(void *arg)
 {
-    /*
-     * Only this thread will dequeue!
-    */
-    pq_node_t node2;
+    
+    * Only this thread will dequeue!
+    
+    queue_node_t node2;
     uint64_t fd_buf = 0;
     packet_profile_t * delay_pkt;
     struct sockaddr_in peeraddr;
@@ -1152,11 +1037,11 @@ void* tick_queue(void *arg)
         }
 
         // the priority is the timer's interval, so for every tick, should reduce all node's priority
-        pq_reduce(&global_tick_queue, TICK_INTERVAL);
+        queue_reduce(&global_tick_queue, TICK_INTERVAL);
 
         if(global_tick_queue.sorted == 0)
         {
-            pq_sort(&global_tick_queue, 0);
+            queue_sort(&global_tick_queue, 0);
 
             if(pthread_mutex_lock(&global_tick_queue_lock) != 0)
             {
@@ -1176,7 +1061,7 @@ void* tick_queue(void *arg)
         bool dequeue_flag = true;
         while(dequeue_flag)
         {
-            if(pq_look_first(&global_tick_queue, &node2) != 0)
+            if(queue_look_first(&global_tick_queue, &node2) != 0)
             {
                 dequeue_flag = false;  // no data in queue
                 continue;
@@ -1191,7 +1076,7 @@ void* tick_queue(void *arg)
                 continue;
             }
 
-            if(pq_deq(&global_tick_queue, &node2) == 0)
+            if(queue_get(&global_tick_queue, &node2) == 0)
             {
                 if(pthread_mutex_lock(&global_tick_queue_lock) != 0)
                 {
@@ -1226,7 +1111,7 @@ void* tick_queue(void *arg)
                         ERROR(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
                 }
 
-                ll_array_return(global_tick_list_head, node1);
+                // ll_array_return(global_tick_list_head, node1);
 
                 if(pthread_mutex_unlock(&global_tick_queue_lock) != 0)
                 {
@@ -1242,6 +1127,8 @@ void* tick_queue(void *arg)
     free(buf_send);
     return NULL;
 }
+
+*/
 
 void* watch_secret(void *arg)
 {
@@ -1675,37 +1562,23 @@ void* server_read(void *arg)
             encrypt(buf_send+HEADER_LEN+ICV_LEN+i*AES_TEXT_LEN, buf_load+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
 
         bool dup = should_pkt_dup(peer_table[bigger_id], buf_load);
+        int len = HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN;
 
-        //copy send packet to send thread
-        if(pthread_mutex_lock(&global_send_mutex) != 0)
-        {
-            ERROR(errno, "pthread_mutex_lock");
-            ERROR(0, "Drop this packet to dst_id: %d.%d", dst_id/256, dst_id%256);
-            continue;
-        }
+        packet_profile_t * pkt = new_pkt();
 
-        if((global_send_last + 1) % SEND_BUF_SIZE == global_send_first)
-            ERROR(0, "send_buf is full, drop this packet to dst_id: %d.%d", dst_id/256, dst_id%256);
-        else
-        {
-            int len = HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN;
-            global_send_last = (global_send_last + 1) % SEND_BUF_SIZE;
-            global_send_buf[global_send_last].src_id = global_self_id;
-            global_send_buf[global_send_last].dst_id = dst_id;
-            global_send_buf[global_send_last].forward = false;
-            global_send_buf[global_send_last].send_fd = global_sockfd;
-            global_send_buf[global_send_last].dup = dup;
-            global_send_buf[global_send_last].len = len;
-            global_send_buf[global_send_last].timestamp = now;
-            global_send_buf[global_send_last].seq = peer_table[dst_id]->local_seq;
-            memcpy(global_send_buf[global_send_last].buf_packet, buf_send, len);
-            peer_table[dst_id]->pkt_index_array_now[peer_table[dst_id]->local_seq] = global_send_last;
-        }
+        pkt->src_id = global_self_id;
+        pkt->dst_id = dst_id;
+        pkt->forward = false;
+        pkt->send_fd = global_sockfd;
+        pkt->dup = dup;
+        pkt->len = len;
+        pkt->timestamp = now;
+        pkt->seq = peer_table[dst_id]->local_seq;
+        memcpy(pkt->buf_packet, buf_send, len);
 
-        pthread_cond_signal(&global_send_cond);
+        queue_put(global_send_q, pkt, 0);
 
-        if(pthread_mutex_unlock(&global_send_mutex) != 0)
-            ERROR(errno, "pthread_mutex_unlock");
+        // peer_table[dst_id]->pkt_index_array_now[peer_table[dst_id]->local_seq] = global_send_last;
 
         continue;
     }
@@ -1737,34 +1610,26 @@ void* server_send(void *arg)
 
     while(global_running)
     {
-        if(pthread_mutex_lock(&global_send_mutex) != 0)
-        {
-            ERROR(errno, "pthread_mutex_lock");
-            continue;
-        }
+        packet_profile_t * pkt;
+        queue_get(global_send_q, (void **)&pkt, NULL);
         
-        while(global_send_last == global_send_first)
-            pthread_cond_wait(&global_send_cond, &global_send_mutex);
-
-        global_send_first = (global_send_first + 1) % SEND_BUF_SIZE;
-        sockfd = global_send_buf[global_send_first].send_fd;
-        len = global_send_buf[global_send_first].len;
-        bool dup = global_send_buf[global_send_first].dup;
-        bool forward = global_send_buf[global_send_first].forward;
-        struct sockaddr_in src_addr = global_send_buf[global_send_first].src_addr;
-        dst_id = global_send_buf[global_send_first].dst_id;
-        src_id = global_send_buf[global_send_first].src_id;
-        memcpy(buf_send, global_send_buf[global_send_first].buf_packet, len);  // header and ICV are not encryped
+        sockfd = pkt->send_fd;
+        len = pkt->len;
+        // bool dup = pkt->dup;
+        bool forward = pkt->forward;
+        struct sockaddr_in src_addr = pkt->src_addr;
+        dst_id = pkt->dst_id;
+        src_id = pkt->src_id;
+        memcpy(buf_send, pkt->buf_packet, len);  // header and ICV are not encryped
         memcpy(&header_send, buf_send, HEADER_LEN);
+
+        delete_pkt(pkt);
 
         header_send.seq_rand.u32 = ntohl(header_send.seq_rand.u32);
         header_send.seq_rand.bit.rand = random();
         header_send.seq_rand.u32 = htonl(header_send.seq_rand.u32);
         bigger_id = dst_id > src_id ? dst_id : src_id;
         buf_psk = peer_table[bigger_id]->psk;
-        
-        if(pthread_mutex_unlock(&global_send_mutex) != 0)
-            ERROR(errno, "pthread_mutex_unlock");
     
         // DEBUG("forwarder_nr: %d, dst_id: %d, src_id: %d", global_forwarder_nr, dst_id, src_id);
         if(global_forwarder_nr > 0 && dst_id < src_id)  // send to forwarders
@@ -1844,7 +1709,7 @@ void* server_send(void *arg)
                     ERROR(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
             }
         }
-
+/*
         if(dup)  // add to tick_queue for delay
         {
             if(pthread_mutex_lock(&global_tick_queue_lock) != 0)
@@ -1853,7 +1718,7 @@ void* server_send(void *arg)
                 continue;
             }
 
-            ll_node_t * node1 = ll_array_borrow(global_tick_list_head);  // malloc from the list and it's data pointer.
+            // ll_node_t * node1 = ll_array_borrow(global_tick_list_head);  // malloc from the list and it's data pointer.
             if(node1 == NULL)
                 ERROR(0, "tick_queue write_buf is full, drop this packet to next id: %d.%d", dst_id/256, dst_id%256);
             else
@@ -1866,10 +1731,10 @@ void* server_send(void *arg)
                 pkt->dst_id = dst_id;
                 pkt->dst_addr = peer_table[dst_id]->path_array[0].peeraddr;
                 memcpy(pkt->buf_packet, buf_send, len);
-                pq_node_t node2;
+                queue_node_t node2;
                 node2.priority = UDP_DUP_DELAY;
                 node2.data = node1;
-                if(pq_enq(&global_tick_queue, &node2) == 0)
+                if(queue_put(&global_tick_queue, &node2) == 0)
                     global_tick_queue.sorted = 0;
                 else
                     DEBUG("append delay_pkt into tick_queue failed");
@@ -1881,7 +1746,7 @@ void* server_send(void *arg)
                 continue;
             }
         }
-
+*/
         continue;
     }
 
@@ -1901,24 +1766,15 @@ void* server_write(void *arg)
 
     while(global_running)
     {
-        if(pthread_mutex_lock(&global_write_mutex) != 0)
-        {
-            ERROR(errno, "pthread_mutex_lock");
-            continue;
-        }
-        
-        while(global_write_last == global_write_first)
-            pthread_cond_wait(&global_write_cond, &global_write_mutex);
+        packet_profile_t * pkt;
+        queue_get(global_write_q, (void **)&pkt, NULL);
 
-        global_write_first = (global_write_first + 1) % WRITE_BUF_SIZE;
-        tunfd = global_write_buf[global_write_first].write_fd;
-        len = global_write_buf[global_write_first].len;
-        dst_id = global_write_buf[global_write_first].dst_id;
-        memcpy(buf_write, global_write_buf[global_write_first].buf_packet, len);
-        
-        if(pthread_mutex_unlock(&global_write_mutex) != 0)
-            ERROR(errno, "pthread_mutex_unlock");
-    
+        tunfd = pkt->write_fd;
+        len = pkt->len;
+        dst_id = pkt->dst_id;
+        memcpy(buf_write, pkt->buf_packet, len);
+        delete_pkt(pkt);
+
         if(write(tunfd, buf_write, len) < 0)
             ERROR(errno, "tunif %s write error of dst_id %d.%d", global_tunif.name, dst_id/256, dst_id%256);
 
@@ -2096,31 +1952,15 @@ void* server_recv(void *arg)
                 ip_dnat(buf_load, daddr);
             }
 
-            // copy write packet to write thread
-            if(pthread_mutex_lock(&global_write_mutex) != 0)
-            {
-                ERROR(errno, "pthread_mutex_lock");
-                ERROR(0, "Drop this packet to dst_id: %d.%d", dst_id/256, dst_id%256);
-                continue;
-            }
+            packet_profile_t * pkt = new_pkt();
 
-            if((global_write_last + 1) % WRITE_BUF_SIZE == global_write_first)
-            {
-                ERROR(0, "write_buf is full, drop this packet to dst_id: %d.%d", dst_id/256, dst_id%256);
-                continue;
-            }
+            pkt->src_id = src_id;
+            pkt->dst_id = dst_id;
+            pkt->write_fd = global_tunfd;
+            pkt->len = len_load;
+            memcpy(pkt->buf_packet, buf_load, len_load);
 
-            global_write_last = (global_write_last + 1) % WRITE_BUF_SIZE;
-            global_write_buf[global_write_last].src_id = src_id;
-            global_write_buf[global_write_last].dst_id = dst_id;
-            global_write_buf[global_write_last].write_fd = global_tunfd;
-            global_write_buf[global_write_last].len = len_load;
-            memcpy(global_write_buf[global_write_last].buf_packet, buf_load, len_load);
-
-            pthread_cond_signal(&global_write_cond);
-    
-            if(pthread_mutex_unlock(&global_write_mutex) != 0)
-                ERROR(errno, "pthread_mutex_unlock");
+            queue_put(global_write_q, pkt, 0);
 
             continue;
         }
@@ -2161,31 +2001,20 @@ void* server_recv(void *arg)
             memcpy(buf_recv, &header_send, HEADER_LEN);
 
             bool dup = should_pkt_dup(peer_table[bigger_id], NULL);
-
-            //copy send packet to send thread
-            if(pthread_mutex_lock(&global_send_mutex) != 0)
-            {
-                ERROR(errno, "pthread_mutex_lock");
-                ERROR(0, "drop this packet to dst_id: %d.%d", dst_id/256, dst_id%256);
-                continue;
-            }
-    
-            if((global_send_last + 1) % SEND_BUF_SIZE == global_send_first)
-            {
-                ERROR(0, "send_buf is full, drop this packet to dst_id: %d.%d", dst_id/256, dst_id%256);
-                continue;
-            }
-
             int len = HEADER_LEN + ICV_LEN + nr_aes_block*AES_TEXT_LEN;
-            global_send_last = (global_send_last + 1) % SEND_BUF_SIZE;
-            global_send_buf[global_send_last].src_id = src_id;
-            global_send_buf[global_send_last].dst_id = dst_id;
-            global_send_buf[global_send_last].forward = true;
-            global_send_buf[global_send_last].src_addr = peeraddr;
-            global_send_buf[global_send_last].send_fd = global_sockfd;
-            global_send_buf[global_send_last].len = len;
-            global_send_buf[global_send_last].dup = dup;
-            memcpy(global_send_buf[global_send_last].buf_packet, buf_recv, len);
+
+            packet_profile_t * pkt = new_pkt();
+
+            pkt->src_id = src_id;
+            pkt->dst_id = dst_id;
+            pkt->forward = true;
+            pkt->src_addr = peeraddr;
+            pkt->send_fd = global_sockfd;
+            pkt->len = len;
+            pkt->dup = dup;
+            memcpy(pkt->buf_packet, buf_recv, len);
+            queue_put(global_send_q, pkt, 0);
+
             if(pkt_seq < SEQ_LEVEL_1)
             {
                 if(fs == 3 && pkt_seq == 0) //time_diff == 1, swap only once.
@@ -2194,16 +2023,11 @@ void* server_recv(void *arg)
                     peer_table[dst_id]->pkt_index_array_pre = peer_table[dst_id]->pkt_index_array_now;
                     peer_table[dst_id]->pkt_index_array_now = tmp_index;
                 }
-                if(fs == 1) //time_diff == -1
-                    peer_table[dst_id]->pkt_index_array_pre[pkt_seq] = global_send_last;
-                else
-                    peer_table[dst_id]->pkt_index_array_now[pkt_seq] = global_send_last;
+                // if(fs == 1) //time_diff == -1
+                    // peer_table[dst_id]->pkt_index_array_pre[pkt_seq] = global_send_last;
+                // else
+                    // peer_table[dst_id]->pkt_index_array_now[pkt_seq] = global_send_last;
             }
-
-            pthread_cond_signal(&global_send_cond);
-
-            if(pthread_mutex_unlock(&global_send_mutex) != 0)
-                ERROR(errno, "pthread_mutex_unlock");
 
             continue;
         }

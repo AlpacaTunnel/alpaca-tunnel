@@ -5,7 +5,6 @@
 #include <arpa/inet.h>
 
 #include "cmd_helper.h"
-#include "data_struct.h"
 #include "log.h"
 #include "ip.h"
 
@@ -17,15 +16,14 @@ static int iptables_nat_set = 0;
 static int iptables_tcpmss_set = 0;
 
 
-int run_cmd_list(ll_node_t ** cmd_list)
+int run_cmd_list(queue_t * cmd_list)
 {
-    char *cmd;
-    int rc;
     int flag = 0;
-    while( (cmd = ll_shift(cmd_list) ) != NULL)
+    while(!queue_is_empty(cmd_list))
     {
-        rc = system(cmd);
-        if(rc != 0)
+        char *cmd;
+        queue_get(cmd_list, (void **)&cmd, NULL);
+        if(system(cmd) != 0)
         {
             flag = -1;
             WARNING("run cmd %s failed.", cmd);

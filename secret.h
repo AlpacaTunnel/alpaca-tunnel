@@ -5,8 +5,7 @@
 
 #include "aes.h"
 #include "ip.h"
-#include "bool.h"
-#include "data_struct.h"
+#include "data-struct/data-struct.h"
 
 #define SEQ_LEVEL_1 16000   //enough for 100Mbps TCP
 #define TCP_SESSION_CNT 100

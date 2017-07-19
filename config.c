@@ -1,18 +1,17 @@
+/*
+ * This file was written on top of jsmn's example code.
+ */
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 
-#include "jsmn.h"
+#include "data-struct/jsmn.h"
 #include "log.h"
 #include "ip.h"
 #include "config.h"
-#include "data_struct.h"
-
-
-/*
- * This file was written on top of jsmn's example code.
- */
 
 
 static int jsoneq(const char *json, jsmntok_t *tok, const char *s)
@@ -33,20 +32,45 @@ int free_config(config_t * config)
     free(config->secret_file);
     free(config->chnroute);
 
-    ll_free(&config->forwarders);
-    ll_free(&config->use_dns);
-    ll_free(&config->local_routes);
-    ll_free(&config->pre_up_cmds);
-    ll_free(&config->post_up_cmds);
-    ll_free(&config->pre_down_cmds);
-    ll_free(&config->post_down_cmds);
+    queue_destroy(config->forwarders, NULL);
+    queue_destroy(config->use_dns, NULL);
+    queue_destroy(config->local_routes, NULL);
+    queue_destroy(config->local_routes_bakup, NULL);
+    queue_destroy(config->pre_up_cmds, NULL);
+    queue_destroy(config->post_up_cmds, NULL);
+    queue_destroy(config->pre_down_cmds, NULL);
+    queue_destroy(config->post_down_cmds, NULL);
 
     return 0;
 }
 
 
+int init_config_queue(config_t * config)
+{
+    config->forwarders          = queue_init(QUEUE_TYPE_FIFO);
+    config->use_dns             = queue_init(QUEUE_TYPE_FIFO);
+    config->local_routes        = queue_init(QUEUE_TYPE_FIFO);
+    config->local_routes_bakup  = queue_init(QUEUE_TYPE_FIFO);
+    config->pre_up_cmds         = queue_init(QUEUE_TYPE_FIFO);
+    config->post_up_cmds        = queue_init(QUEUE_TYPE_FIFO);
+    config->pre_down_cmds       = queue_init(QUEUE_TYPE_FIFO);
+    config->post_down_cmds      = queue_init(QUEUE_TYPE_FIFO);
+
+    if(!config->forwarders || !config->use_dns 
+        || !config->local_routes || !config->local_routes_bakup
+        || !config->pre_up_cmds || !config->post_up_cmds
+        || !config->pre_down_cmds || !config->post_down_cmds)
+        return -1;
+
+    return 0;
+}
+
 int load_config(const char * config_file, config_t * config)
 {
+
+    if(init_config_queue(config) != 0)
+        return -1;
+
     FILE *f = fopen(config_file, "r");
     if(f == NULL)
     {
@@ -167,7 +191,7 @@ int load_config(const char * config_file, config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                ll_append(&config->forwarders, cg);
+                queue_put(config->forwarders, cg, 0);
             }
             i += tok[i+1].size + 1;
         }
@@ -182,7 +206,7 @@ int load_config(const char * config_file, config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                ll_append(&config->use_dns, cg);
+                queue_put(config->use_dns, cg, 0);
             }
             i += tok[i+1].size + 1;
         }
@@ -197,7 +221,8 @@ int load_config(const char * config_file, config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                ll_append(&config->local_routes, cg);
+                queue_put(config->local_routes, cg, 0);
+                queue_put(config->local_routes_bakup, cg, 0);
             }
             i += tok[i+1].size + 1;
         } 
@@ -212,7 +237,7 @@ int load_config(const char * config_file, config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                ll_append(&config->pre_up_cmds, cg);
+                queue_put(config->pre_up_cmds, cg, 0);
             }
             i += tok[i+1].size + 1;
         } 
@@ -227,7 +252,7 @@ int load_config(const char * config_file, config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                ll_append(&config->post_up_cmds, cg);
+                queue_put(config->post_up_cmds, cg, 0);
             }
             i += tok[i+1].size + 1;
         }
@@ -242,7 +267,7 @@ int load_config(const char * config_file, config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                ll_append(&config->pre_down_cmds, cg);
+                queue_put(config->pre_down_cmds, cg, 0);
             }
             i += tok[i+1].size + 1;
         } 
@@ -257,7 +282,7 @@ int load_config(const char * config_file, config_t * config)
                 char * start_g = json_string + g->start;
                 int len_g = g->end - g->start;
                 char * cg = strndup(start_g, len_g);
-                ll_append(&config->post_down_cmds, cg);
+                queue_put(config->post_down_cmds, cg, 0);
             }
             i += tok[i+1].size + 1;
         }
@@ -381,11 +406,12 @@ int check_config(config_t * config)
     }
 
     config->forwarder_nr = 0;
-    ll_node_t * saveptr = NULL;
-    char * forwarder_str = (char *)ll_get_next(config->forwarders, &saveptr);
-    while(forwarder_str != NULL)
+
+    while(!queue_is_empty(config->forwarders))
     {
-        config->forwarder_nr ++;
+        config->forwarder_nr++;
+        char * forwarder_str = NULL;
+        queue_get(config->forwarders, (void **)&forwarder_str, NULL);
         int forwarder_id = inet_ptons(forwarder_str);
         if(forwarder_id <= 1 || forwarder_id >= MAX_ID)
         {
@@ -393,7 +419,6 @@ int check_config(config_t * config)
             return -1;
         }
         INFO("forwarder: %s", forwarder_str);
-        forwarder_str = (char *)ll_get_next(NULL, &saveptr);
     }
     if(config->forwarder_nr > 4)
         WARNING("too many forwarders!");

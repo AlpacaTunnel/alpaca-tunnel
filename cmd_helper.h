@@ -4,9 +4,9 @@
 /* functions to run system cmd */
 
 
-#include "data_struct.h"
+#include "data-struct/data-struct.h"
 
-int run_cmd_list(ll_node_t ** cmd_list);  // after calling this func, cmd_list will be emptied.
+int run_cmd_list(queue_t * cmd_list);  // after calling this func, cmd_list will be emptied.
 
 int enable_ip_forward();
 

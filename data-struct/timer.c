@@ -1,7 +1,7 @@
 #include "timer.h"
 
 /*
- * These timespec manipulation functions were taken from http://lxr.free-electrons.com/source/include/linux/time.h
+ * These timespec_* manipulation functions were taken from http://lxr.free-electrons.com/source/include/linux/time.h
  * and http://lxr.free-electrons.com/source/kernel/time/time.c. I can't find a header to include, so I copied them.
  *
  * And the timer was inspired by CycloneTCP, http://www.oryx-embedded.com/doc/tcp__timer_8c_source.html
@@ -13,7 +13,7 @@
 typedef long long s64;
 
 
-void set_normalized_timespec(struct timespec *ts, time_t sec, s64 nsec)
+static void timespec_set_normalized(struct timespec *ts, time_t sec, s64 nsec)
 {
     while(nsec >= NSEC_PER_SEC)
     {
@@ -50,7 +50,7 @@ static inline int timespec_compare(const struct timespec *lhs, const struct time
 static inline struct timespec timespec_add(struct timespec lhs, struct timespec rhs)
 {
     struct timespec ts_delta;
-    set_normalized_timespec(&ts_delta, lhs.tv_sec + rhs.tv_sec, lhs.tv_nsec + rhs.tv_nsec);
+    timespec_set_normalized(&ts_delta, lhs.tv_sec + rhs.tv_sec, lhs.tv_nsec + rhs.tv_nsec);
     return ts_delta;
 }
 
@@ -60,7 +60,7 @@ static inline struct timespec timespec_add(struct timespec lhs, struct timespec 
 static inline struct timespec timespec_sub(struct timespec lhs, struct timespec rhs)
 {
     struct timespec ts_delta;
-    set_normalized_timespec(&ts_delta, lhs.tv_sec - rhs.tv_sec, lhs.tv_nsec - rhs.tv_nsec);
+    timespec_set_normalized(&ts_delta, lhs.tv_sec - rhs.tv_sec, lhs.tv_nsec - rhs.tv_nsec);
     return ts_delta;
 }
 
@@ -78,13 +78,13 @@ static inline uint32_t timespec_to_ms(const struct timespec *ts)
 /********************** timer *********************/
 
 
-int start_timer(timer_ms_t * timer, int interval)
+int timer_start(timer_ms_t * timer, int interval)
 {
     clock_gettime(CLOCK_REALTIME, &(timer->init_time));
 
     timer->interval.tv_sec = 0;
     timer->interval.tv_nsec = 0;
-    set_normalized_timespec(&(timer->interval), 0, interval * NSEC_PER_MSEC);
+    timespec_set_normalized(&(timer->interval), 0, interval * NSEC_PER_MSEC);
 
     timer->deadline = timespec_add(timer->init_time, timer->interval);
 
@@ -94,14 +94,14 @@ int start_timer(timer_ms_t * timer, int interval)
 }
 
 
-int stop_timer(timer_ms_t * timer)
+int timer_stop(timer_ms_t * timer)
 {
     timer->running = false;
     return 0;
 }
 
 
-int restart_timer(timer_ms_t * timer)
+int timer_restart(timer_ms_t * timer)
 {
     clock_gettime(CLOCK_REALTIME, &(timer->init_time));
     return 0;
@@ -122,7 +122,7 @@ bool timer_elapsed(const timer_ms_t * timer)
         return true;
 }
 
-uint32_t get_timer_left(const timer_ms_t * timer)
+uint32_t timer_left(const timer_ms_t * timer)
 {
     struct timespec now;
     clock_gettime(CLOCK_REALTIME, &now);
