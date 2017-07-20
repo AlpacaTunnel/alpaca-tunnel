@@ -21,7 +21,7 @@
 #include "data-struct/data-struct.h"
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "4.2"
+#define VERSION         "4.2.1"
 
 /*
  * Config file path choose order:
@@ -134,7 +134,7 @@ void delete_pkt(packet_profile_t * pkt)
 
 static queue_t * global_send_q = NULL;
 static queue_t * global_write_q = NULL;
-
+static tick_queue_t * global_delay_q = NULL;
 
 static int global_running = 0;
 static int global_sysroute_change = 0;
@@ -168,7 +168,7 @@ static int global_trusted_ip_cnt = 0;
 static uint16_t * global_forwarders = NULL;
 static int global_forwarder_nr = 0;
 
-void* tick_queue(void *arg);
+void* pkt_delay_dup(void *arg);
 
 //client_read and client_recv are obsoleted
 void* client_read(void *arg);
@@ -251,11 +251,8 @@ int init_global_values()
 
     global_send_q = queue_init(QUEUE_TYPE_FIFO);
     global_write_q = queue_init(QUEUE_TYPE_FIFO);
+    global_delay_q = tick_queue_init();
 
-    // ll_array_init(&global_tick_list_head, TICK_QUEUE_SIZE);
-
-    // ll_array_load_data(global_tick_list_head, TICK_QUEUE_SIZE, (uintptr_t)global_tick_queue_buf, (uint)sizeof(packet_profile_t));
-    
     return 0;
 }
 
@@ -267,8 +264,7 @@ int destory_global_values()
 
     queue_destroy(global_send_q, NULL);
     queue_destroy(global_write_q, NULL);
-
-    // ll_array_destory(global_tick_list_head);
+    tick_queue_destroy(global_delay_q, NULL);
 
     return 0;
 }
@@ -324,7 +320,6 @@ int main(int argc, char *argv[])
     bool default_route_changed = false;
     bool chnroute_set = false;
     bool server_ip_route_added = false;
-    // ll_node_t * local_route_list = NULL;
 
     char default_gw_ip[IP_LEN] = "\0";
     char default_gw_dev[IFNAMSIZ] = "\0";
@@ -737,11 +732,11 @@ int main(int argc, char *argv[])
         goto _END;
     }
 
-    // if(pthread_create(&tid11, NULL, tick_queue, NULL) != 0)
-    // {
-    //     ERROR(errno, "pthread_error: create rc11"); 
-    //     goto _END;
-    // }
+    if(pthread_create(&tid11, NULL, pkt_delay_dup, NULL) != 0)
+    {
+        ERROR(errno, "pthread_error: create rc11"); 
+        goto _END;
+    }
 
 
     /******************* main thread sleeps during running *******************/
@@ -985,15 +980,8 @@ uint16_t get_dst_id(uint32_t ip_dst, uint32_t ip_src)
 }
 
 
-/*
-void* tick_queue(void *arg)
+void* pkt_delay_dup(void *arg)
 {
-    
-    * Only this thread will dequeue!
-    
-    queue_node_t node2;
-    uint64_t fd_buf = 0;
-    packet_profile_t * delay_pkt;
     struct sockaddr_in peeraddr;
     byte * buf_write = (byte *)malloc(TUN_MTU);
     byte * buf_send = (byte *)malloc(ETH_MTU);
@@ -1005,122 +993,41 @@ void* tick_queue(void *arg)
     uint16_t dst_id = 0;
     int tunfd = 0;
 
-    struct itimerspec tick_it;
-    tick_it.it_value.tv_sec = 0;
-    tick_it.it_value.tv_nsec = TICK_INTERVAL * 1000000;
-    tick_it.it_interval.tv_sec = 0;
-    tick_it.it_interval.tv_nsec = TICK_INTERVAL * 1000000;
-
-    int tick_fd = timerfd_create(CLOCK_MONOTONIC, 0);
-    if(tick_fd == -1)
-    {
-        ERROR(errno, "timerfd_create");
-        return NULL;
-    }
-    if(timerfd_settime(tick_fd, 0, &tick_it, NULL) == -1)
-    {
-        ERROR(errno, "timerfd_settime");
-        close(tick_fd);
-        return NULL;
-    }
-
-    // int pre_sort_tick = 0;
-    // int tick_nr = 0;
-    // int max_tick_round = 3600000; // 1 hour, let's assume no timer will be lager than 1 hour.
     while(global_running)
     {
-        // wait timerfd interval
-        if(read(tick_fd, &fd_buf, sizeof(uint64_t)) < 0)
-        {
-            ERROR(errno, "tunif %s read tick_fd", global_tunif.name);
+        packet_profile_t * pkt;
+        pkt = tick_queue_get(global_delay_q);
+        if(pkt == NULL)
             continue;
-        }
 
-        // the priority is the timer's interval, so for every tick, should reduce all node's priority
-        queue_reduce(&global_tick_queue, TICK_INTERVAL);
-
-        if(global_tick_queue.sorted == 0)
+        if(pkt->type == pkt_write)
         {
-            queue_sort(&global_tick_queue, 0);
-
-            if(pthread_mutex_lock(&global_tick_queue_lock) != 0)
-            {
-                ERROR(errno, "pthread_mutex_lock");
-                continue;
-            }
-
-            global_tick_queue.sorted = 1;
+            // DEBUG("write delayed ack");
+            tunfd = pkt->write_fd;
+            len = pkt->len;
+            dst_id = pkt->dst_id;
+            memcpy(buf_write, pkt->buf_packet, len);
             
-            if(pthread_mutex_unlock(&global_tick_queue_lock) != 0)
-            {
-                ERROR(errno, "pthread_mutex_unlock");
-                continue;
-            }
+            if(write(tunfd, buf_write, len) < 0)
+                ERROR(errno, "tunif %s write error of dst_id %d.%d", global_tunif.name, dst_id/256, dst_id%256);
         }
 
-        bool dequeue_flag = true;
-        while(dequeue_flag)
+        if(pkt->type == pkt_send)
         {
-            if(queue_look_first(&global_tick_queue, &node2) != 0)
-            {
-                dequeue_flag = false;  // no data in queue
-                continue;
-            }
-        
-            ll_node_t * node1 = node2.data;
-            delay_pkt = node1->data;
-            if(!timer_elapsed(&(delay_pkt->ms_timer)))
-            {
-                dequeue_flag = false;  // the first timer in queue has not elapsed
-                // DEBUG("not elapsed");
-                continue;
-            }
+            // DEBUG("send delayed pkt");
+            sockfd = pkt->send_fd;
+            len = pkt->len;
 
-            if(queue_get(&global_tick_queue, &node2) == 0)
-            {
-                if(pthread_mutex_lock(&global_tick_queue_lock) != 0)
-                {
-                    ERROR(errno, "pthread_mutex_lock");
-                    continue;
-                }
+            dst_id = pkt->dst_id;
+            peeraddr = pkt->dst_addr;
+            memcpy(buf_send, pkt->buf_packet, len);
 
-                if(delay_pkt->type == pkt_write)
-                {
-                    // DEBUG("write delayed ack");
-                    tunfd = delay_pkt->write_fd;
-                    len = delay_pkt->len;
-                    dst_id = delay_pkt->dst_id;
-                    memcpy(buf_write, delay_pkt->buf_packet, len);
-                    
-                    if(write(tunfd, buf_write, len) < 0)
-                        ERROR(errno, "tunif %s write error of dst_id %d.%d", global_tunif.name, dst_id/256, dst_id%256);
-                }
-
-                if(delay_pkt->type == pkt_send)
-                {
-                    // DEBUG("send delayed pkt");
-                    sockfd = delay_pkt->send_fd;
-                    len = delay_pkt->len;
-        
-                    dst_id = delay_pkt->dst_id;
-                    peeraddr = delay_pkt->dst_addr;
-                    memcpy(buf_send, delay_pkt->buf_packet, len);
-
-                    int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
-                    if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)&peeraddr, sizeof(peeraddr)) < 0 )
-                        ERROR(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
-                }
-
-                // ll_array_return(global_tick_list_head, node1);
-
-                if(pthread_mutex_unlock(&global_tick_queue_lock) != 0)
-                {
-                    ERROR(errno, "pthread_mutex_unlock");
-                    continue;
-                }
-            }
+            int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
+            if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)&peeraddr, sizeof(peeraddr)) < 0 )
+                ERROR(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
         }
 
+        delete_pkt(pkt);
     }
 
     free(buf_write);
@@ -1128,7 +1035,6 @@ void* tick_queue(void *arg)
     return NULL;
 }
 
-*/
 
 void* watch_secret(void *arg)
 {
@@ -1615,7 +1521,7 @@ void* server_send(void *arg)
         
         sockfd = pkt->send_fd;
         len = pkt->len;
-        // bool dup = pkt->dup;
+        bool dup = pkt->dup;
         bool forward = pkt->forward;
         struct sockaddr_in src_addr = pkt->src_addr;
         dst_id = pkt->dst_id;
@@ -1709,44 +1615,21 @@ void* server_send(void *arg)
                     ERROR(errno, "tunif %s sendto dst_id %d.%d socket error", global_tunif.name, dst_id/256, dst_id%256);
             }
         }
-/*
-        if(dup)  // add to tick_queue for delay
-        {
-            if(pthread_mutex_lock(&global_tick_queue_lock) != 0)
-            {
-                ERROR(errno, "pthread_mutex_lock");
-                continue;
-            }
 
-            // ll_node_t * node1 = ll_array_borrow(global_tick_list_head);  // malloc from the list and it's data pointer.
-            if(node1 == NULL)
-                ERROR(0, "tick_queue write_buf is full, drop this packet to next id: %d.%d", dst_id/256, dst_id%256);
-            else
-            {
-                packet_profile_t * pkt = (packet_profile_t *)(node1->data);
-                start_timer(&(pkt->ms_timer), UDP_DUP_DELAY);
-                pkt->type = pkt_send;
-                pkt->send_fd = sockfd;
-                pkt->len = len;
-                pkt->dst_id = dst_id;
-                pkt->dst_addr = peer_table[dst_id]->path_array[0].peeraddr;
-                memcpy(pkt->buf_packet, buf_send, len);
-                queue_node_t node2;
-                node2.priority = UDP_DUP_DELAY;
-                node2.data = node1;
-                if(queue_put(&global_tick_queue, &node2) == 0)
-                    global_tick_queue.sorted = 0;
-                else
-                    DEBUG("append delay_pkt into tick_queue failed");
-            }
-            
-            if(pthread_mutex_unlock(&global_tick_queue_lock) != 0)
-            {
-                ERROR(errno, "pthread_mutex_unlock");
-                continue;
-            }
+        if(dup)  // add to pkt_delay_dup for delay
+        {
+            packet_profile_t * pkt = new_pkt();
+
+            pkt->type = pkt_send;
+            pkt->send_fd = sockfd;
+            pkt->len = len;
+            pkt->dst_id = dst_id;
+            pkt->dst_addr = peer_table[dst_id]->path_array[0].peeraddr;
+            memcpy(pkt->buf_packet, buf_send, len);
+
+            tick_queue_put(global_delay_q, pkt, UDP_DUP_DELAY);
         }
-*/
+
         continue;
     }
 
