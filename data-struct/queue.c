@@ -34,7 +34,7 @@ queue_t * queue_init(int type)
     queue->mutex = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
     if(queue->mutex == NULL)
     {
-        printf("queue_init: malloc failed\n");
+        perror("queue_init: malloc failed");
         return NULL;
     }
 
@@ -47,7 +47,7 @@ queue_t * queue_init(int type)
     queue->cond = (pthread_cond_t *)malloc(sizeof(pthread_cond_t));
     if(queue->cond == NULL)
     {
-        printf("queue_init: malloc failed\n");
+        perror("queue_init: malloc failed");
         return NULL;
     }
 

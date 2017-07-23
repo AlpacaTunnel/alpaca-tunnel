@@ -11,83 +11,196 @@
 
 #include "route.h"
 #include "log.h"
+#include "data-struct/data-struct.h"
 
 
 #define NLMSG_TAIL(nmsg) ((struct rtattr *) (((void *) (nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))
 
-static pthread_mutex_t route_lock;
-static int route_lock_inited = 0;
 
-//rt_tb_index points to the latest route_item_t
-static int rt_tb_index = 0;
-static route_item_t route_table[RT_TB_SIZE];
-
-int init_route_lock()
+forwarding_table_t * forwarding_table_init(uint32_t size)
 {
-    if(0 == route_lock_inited)
+    if(size == 0)
     {
-        if(pthread_mutex_init(&route_lock, NULL) != 0)
+        ERROR(0, "illegal size");
+        return NULL;
+    }
+
+    forwarding_table_t * table = (forwarding_table_t *)malloc(sizeof(forwarding_table_t));
+    if(table == NULL)
+    {
+        ERROR(errno, "malloc failed");
+        return NULL;
+    }
+
+    table->mutex = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
+    if(table->mutex == NULL)
+    {
+        ERROR(errno, "malloc failed");
+        return NULL;
+    }
+
+    if(pthread_mutex_init(table->mutex, NULL) != 0)
+    {
+        ERROR(errno, "pthread_mutex_init");
+        return NULL;
+    }
+
+    table->array = (route_item_t *)malloc((size+1) * sizeof(route_item_t));
+    if(table->array == NULL)
+    {
+        ERROR(errno, "malloc failed");
+        return NULL;
+    }
+
+    bzero(table->array, (size+1) * sizeof(route_item_t));
+
+    table->type = ROUTE_TYPE_IPV4;
+    table->size = size;
+    table->counter = 0;
+
+    return table;
+}
+
+
+int forwarding_table_destroy(forwarding_table_t * table)
+{
+    if(table == NULL)
+        return 0;
+
+    pthread_mutex_destroy(table->mutex);
+    free(table->mutex);
+    free(table->array);
+    free(table);
+
+    return 0;
+}
+
+
+int forwarding_table_clear(forwarding_table_t * table)
+{
+    if(table == NULL)
+        return 0;
+
+    if(pthread_mutex_lock(table->mutex) != 0)
+    {
+        ERROR(errno, "pthread_mutex_lock");
+        return -1;
+    }
+
+    bzero(table->array, table->size * sizeof(route_item_t));
+    table->counter = 0;
+
+    if(pthread_mutex_unlock(table->mutex) != 0)
+    {
+        ERROR(errno, "pthread_mutex_unlock");
+        return -1;
+    }
+
+    return 0;
+}
+
+static int route_item_compare(void *one, void *two)
+{
+    uint64_t one_ip_cat = ((route_item_t *)one)->ip_cat;
+    uint64_t two_ip_cat = ((route_item_t *)two)->ip_cat;
+    if(one_ip_cat < two_ip_cat)
+        return -1;
+    else if(one_ip_cat > two_ip_cat)
+        return 1;
+    else
+        return 0;
+}
+
+static void route_item_swap(void *x, void *y)
+{
+    route_item_t t = *(route_item_t *)x;
+    *(route_item_t *)x = *(route_item_t *)y;
+    *(route_item_t *)y = t;
+}
+
+
+uint16_t forwarding_table_get(forwarding_table_t * table, uint32_t ip_dst, uint32_t ip_src)
+{
+    if(pthread_mutex_lock(table->mutex) != 0)
+    {
+        ERROR(errno, "pthread_mutex_lock");
+        return 0;
+    }
+
+    route_item_t item;
+    item.ip_cat = ip_dst;
+    item.ip_cat = (item.ip_cat << 32) + ip_src;
+
+    // struct timespec start, stop;
+    // clock_gettime(CLOCK_REALTIME, &start);
+
+    int index = binary_search(table->array, sizeof(route_item_t), 0, table->size - 1, &item, route_item_compare);
+
+    // clock_gettime(CLOCK_REALTIME, &stop);
+    // printf("took %lu\n", stop.tv_sec - start.tv_sec);
+    // printf("took %lu\n", stop.tv_nsec - start.tv_nsec);
+
+    uint16_t gw_id = 0;
+
+    if(index >= 0)
+    {
+        table->counter++;
+        table->array[index].counter = table->counter;
+        gw_id = table->array[index].gw_id;
+    }
+
+    if(pthread_mutex_unlock(table->mutex) != 0)
+    {
+        ERROR(errno, "pthread_mutex_unlock");
+        return 0;
+    }
+
+    return gw_id;
+}
+
+
+static uint32_t forwarding_table_get_oldest(forwarding_table_t * table)
+{
+    int min_index = 0;
+    uint64_t min_counter = ~0;
+    for(int i = 0; i < table->size; i++)
+    {
+        if(table->array[i].counter == 0)
+            return i;
+        if(table->array[i].counter < min_counter)
         {
-            ERROR(errno, "pthread_mutex_init");
-            return -1;
+            min_index = i;
+            min_counter = table->array[i].counter;
         }
-        route_lock_inited = 1;
     }
-    return 0;
+
+    return min_index;
 }
 
-int destroy_route_lock()
-{
-    if(1 == route_lock_inited)
-    {
-        if(pthread_mutex_destroy(&route_lock) != 0)
-        {
-            ERROR(errno, "pthread_mutex_destroy");
-            return -1;
-        }
-        route_lock_inited = 0;
-    }
-    return 0;
-}
 
-int lock_route_mutex()
+int forwarding_table_put(forwarding_table_t * table, uint32_t ip_dst, uint32_t ip_src, uint16_t gw_id)
 {
-    if(pthread_mutex_lock(&route_lock) != 0)
-    {
-        ERROR(errno, "pthread_mutex_lock");
-        return -1;
-    }
-    return 0;
-}
-
-int unlock_route_mutex()
-{
-    if(pthread_mutex_unlock(&route_lock) != 0)
-    {
-        ERROR(errno, "pthread_mutex_unlock");
-        return -1;
-    }
-    return 0;
-}
-
-int clear_route()
-{
-    if(pthread_mutex_lock(&route_lock) != 0)
+    if(pthread_mutex_lock(table->mutex) != 0)
     {
         ERROR(errno, "pthread_mutex_lock");
         return -1;
     }
 
-    int i = 0;
-    for(i = 0; i < RT_TB_SIZE; i++)
-    {
-        route_table[i].next_hop_id = 0;
-        route_table[i].ip_dst = 0;
-        route_table[i].ip_src = 0;
-    }
-    rt_tb_index = 0;
-    
-    if(pthread_mutex_unlock(&route_lock) != 0)
+    table->counter++;
+    route_item_t item;
+    item.counter = table->counter;
+    item.gw_id = gw_id;
+    item.ip_dst = ip_dst;
+    item.ip_src = ip_src;
+    item.ip_cat = ip_dst;
+    item.ip_cat = (item.ip_cat << 32) + ip_src;
+
+    uint32_t index = forwarding_table_get_oldest(table);
+    table->array[index] = item;
+
+    quick_sort(table->array, sizeof(route_item_t), table->size, route_item_compare, route_item_swap);
+
+    if(pthread_mutex_unlock(table->mutex) != 0)
     {
         ERROR(errno, "pthread_mutex_unlock");
         return -1;
@@ -96,45 +209,6 @@ int clear_route()
     return 0;
 }
 
-int add_route(uint16_t next_hop_id, uint32_t ip_dst, uint32_t ip_src)
-{
-    if(pthread_mutex_lock(&route_lock) != 0)
-    {
-        ERROR(errno, "pthread_mutex_lock");
-        return -1;
-    }
-
-    rt_tb_index = (rt_tb_index + 1) % RT_TB_SIZE;
-    route_table[rt_tb_index].next_hop_id = next_hop_id;
-    route_table[rt_tb_index].ip_dst = ip_dst;
-    route_table[rt_tb_index].ip_src = ip_src;
-
-    if(pthread_mutex_unlock(&route_lock) != 0)
-    {
-        ERROR(errno, "pthread_mutex_unlock");
-        return -1;
-    }
-
-    return 0;
-}
-
-uint16_t get_route(uint32_t ip_dst, uint32_t ip_src)
-{
-    //struct timespec start, stop;
-    //clock_gettime(CLOCK_REALTIME, &start);
-
-    int i;
-    for(i = rt_tb_index; i != (rt_tb_index+1) % RT_TB_SIZE; i = (i-1+RT_TB_SIZE) % RT_TB_SIZE)
-        if(ip_dst == route_table[i].ip_dst && ip_src == route_table[i].ip_src)
-            return route_table[i].next_hop_id;
-        
-    //clock_gettime(CLOCK_REALTIME, &stop);
-    //printf("took %lu\n", stop.tv_sec - start.tv_sec);
-    //printf("took %lu\n", stop.tv_nsec - start.tv_nsec);
-    
-    //if not found, return 0
-    return 0;
-}
 
 int get_ipif_local(uint32_t ip, if_info_t *if_list)
 {
@@ -196,12 +270,6 @@ int clear_if_info(if_info_t *info)
 {
     if(NULL == info)
         return 0;
-    
-    if(pthread_mutex_lock(&route_lock) != 0)
-    {
-        ERROR(errno, "pthread_mutex_lock");
-        return -1;
-    }
 
     if_info_t *p;
     while(info)
@@ -211,23 +279,11 @@ int clear_if_info(if_info_t *info)
         free(p);
     }
 
-    if(pthread_mutex_unlock(&route_lock) != 0)
-    {
-        ERROR(errno, "pthread_mutex_unlock");
-        return -1;
-    }
-
     return 0;
 }
 
 int collect_if_info(if_info_t **first)
 {
-    if(pthread_mutex_lock(&route_lock) != 0)
-    {
-        ERROR(errno, "pthread_mutex_lock");
-        return -1;
-    }
-
     struct ifaddrs *ifaddr, *ifa;
     if(getifaddrs(&ifaddr) == -1) 
     {
@@ -276,12 +332,6 @@ int collect_if_info(if_info_t **first)
     }
 
     freeifaddrs(ifaddr);
-
-    if(pthread_mutex_unlock(&route_lock) != 0)
-    {
-        ERROR(errno, "pthread_mutex_unlock");
-        return -1;
-    }
 
     return 0;
 }

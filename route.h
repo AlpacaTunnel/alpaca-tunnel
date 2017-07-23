@@ -1,3 +1,32 @@
+/*
+ * The forwarding_table should use a data struct that fits for a lot of searching, so I choose sorted array here.
+
+ * When inserting new route item, the oldest should be deleted. How to find the oldest?
+ * Let's use a counter, for each search the total counter increases by 1, then the one with the smallest counter is the oldest one.
+ * The counter is actually timestamp, though it does not increase every second.
+ * At SEQ_LEVEL_1-speed (16000pbs), a uint64_t counter is enough and won't overflow forever.
+
+ * caller should watch if ip route/rule has changed.
+ * on receiving RTMGRP_NOTIFY, these two tables must be reset.
+
+ * route table: clear
+ * ip_dst      ip_src      next_hop_id
+ * 2.2.2.2     10.1.1.2    1.1
+ * 3.3.3.3     10.1.2.2    1.2
+ * ...
+
+ * link_list: re-collect info
+ * if_index    name        ipaddr       mask
+ * 1           lo          127.0.0.1   255
+ * 2           eth0        10.16.1.2   16777215
+ * 3
+ * 4           alptun1     10.5.2.2    65535
+
+ * rtnetlink's args are in network byte order, so are the parameters & data in this file
+
+*/
+
+
 #ifndef ROUTE_H_
 #define ROUTE_H_
 
@@ -10,32 +39,30 @@
 #include <linux/rtnetlink.h>
 
 
-//rtnetlink's args are in network byte order, so are the parameters & data in this file
+#define ROUTE_TYPE_IPV4 0
+#define ROUTE_TYPE_IPV6 1
 
-/*
-caller should watch if ip route/rule has changed.
-on receiving RTMGRP_NOTIFY, these two tables must be reset.
-route table: clear
-ip_dst      ip_src      next_hop_id
-2.2.2.2     10.1.1.2    1.1
-3.3.3.3     10.1.2.2    1.2
-...
-
-link_list: re-collect info
-if_index    name        ipaddr       mask
-1           lo          127.0.0.1   255
-2           eth0        10.16.1.2   16777215
-3
-4           alptun1     10.5.2.2    65535
-
-*/
 
 typedef struct
 {
     uint16_t next_hop_id;
+    uint16_t gw_id;
     uint32_t ip_dst;
     uint32_t ip_src;
+    uint64_t ip_cat;   // concatenate ip_dst and ip_src, ip_cat = ip_dst << 32 + ip_src
+    uint64_t counter;  // the latest counter of current route item
 } route_item_t;
+
+
+typedef struct
+{
+    int type;
+    uint32_t size;
+    uint64_t counter;  // the latest counter of all route items
+    route_item_t * array;
+    pthread_mutex_t * mutex;
+} forwarding_table_t;
+
 
 struct if_info
 {
@@ -48,6 +75,7 @@ struct if_info
 };
 typedef struct if_info if_info_t;
 
+
 typedef struct
 {
     int fd;
@@ -56,20 +84,15 @@ typedef struct
 } rtnl_handle_t;
 
 
-#define RT_TB_SIZE 1024
+forwarding_table_t * forwarding_table_init(uint32_t size);
+int forwarding_table_destroy(forwarding_table_t * table);
+int forwarding_table_clear(forwarding_table_t * table);
+uint16_t forwarding_table_get(forwarding_table_t * table, uint32_t ip_dst, uint32_t ip_src);
+int forwarding_table_put(forwarding_table_t * table, uint32_t ip_dst, uint32_t ip_src, uint16_t next_hop_id);
 
 int lock_route_mutex();
 int unlock_route_mutex();
 
-//don't call init/destroy in multi threads!
-//must call at first
-int init_route_lock();
-//must call at the end
-int destroy_route_lock();
-
-int clear_route();
-int add_route(uint16_t next_hop_id, uint32_t ip_dst, uint32_t ip_src);
-uint16_t get_route(uint32_t ip_dst, uint32_t ip_src);
 
 int clear_if_info(if_info_t *info);
 int collect_if_info(if_info_t **first);

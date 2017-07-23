@@ -7,6 +7,7 @@
 
 
 #include "data-struct/data-struct.h"
+#include "route.h"
 
 
 
@@ -238,11 +239,47 @@ int test_tick_queue()
 /**************************** test tick_queue *********************************************/
 
 
+/**************************** test forwarding_table *********************************************/
+
+int test_forwarding_table()
+{
+    forwarding_table_t * table = forwarding_table_init(5);
+    forwarding_table_put(table, 123, 456, 253);
+    forwarding_table_put(table, 121, 456, 251);
+
+    uint16_t next;
+    next = forwarding_table_get(table, 121, 456); printf("%d\n", next);
+    next = forwarding_table_get(table, 123, 456); printf("%d\n", next);
+
+    forwarding_table_put(table, 124, 456, 254);
+    forwarding_table_put(table, 125, 456, 255);
+    forwarding_table_put(table, 120, 456, 250);
+
+    next = forwarding_table_get(table, 123, 456); printf("%d\n", next);
+    // forwarding_table_clear(table);
+    next = forwarding_table_get(table, 123, 456); printf("%d\n", next);
+
+    next = forwarding_table_get(table, 121, 456); printf("%d\n", next);
+    forwarding_table_put(table, 129, 45, 259);
+    forwarding_table_put(table, 127, 45, 257);
+    forwarding_table_put(table, 128, 45, 258);
+    next = forwarding_table_get(table, 123, 456); printf("%d\n", next);
+    next = forwarding_table_get(table, 124, 456); printf("%d\n", next);
+    next = forwarding_table_get(table, 121, 456); printf("%d\n", next);
+    next = forwarding_table_get(table, 128, 45); printf("%d\n", next);
+    sleep(100);
+
+    return 0;
+}
+
+/**************************** test forwarding_table *********************************************/
+
 int main(void)
 {
     // test_dll();
-    test_queue();
+    // test_queue();
     // test_tick_queue();
+    test_forwarding_table();
 
     return 0;
 }

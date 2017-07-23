@@ -21,7 +21,7 @@
 #include "data-struct/data-struct.h"
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "4.2.1"
+#define VERSION         "4.2.2"
 
 /*
  * Config file path choose order:
@@ -49,6 +49,7 @@
 //length of aes key must be 128, 192 or 256
 #define AES_KEY_LEN 128
 #define DEFAULT_PORT 1984
+#define FORWARDING_TABLE_SIZE 1024
 
 #define MAX_DELAY_TIME 10  //max delay 10 seconds. if an packet delayed more than 10s, it will be treated as new packet.
 
@@ -62,17 +63,8 @@
 #define ALLOW_P2P true
 #define CHECK_RESTRICTED_IP true
 
-//numbers of packets, let's set it 20000 = 00.2*SEQ_LEVEL_1, store 20-milliseconds packets at full speed.
-//ocupy about 2*20000*1500 = 60M memory, allow max speed of about 1Mpps TCP-ACK packets.
-//but if don't store sent/wrote packets, 200 is enough for inter-threads buffer with 100Mbps speed.
-#define WRITE_BUF_SIZE 5000
-#define SEND_BUF_SIZE  5000
 #define EPOLL_MAXEVENTS 1024
-#define TICK_QUEUE_SIZE (SEQ_LEVEL_1 * 2)
-#define TICK_INTERVAL 1 // 1 ms
-#define ACK_NUM 2
-#define ACK_FIRST_TIME  10000000
-#define ACK_INTERVAL    50000000
+
 #define ACK_WRITE_DELAY 100  // ms
 #define UDP_DUP_DELAY   100  // ms
 
@@ -147,7 +139,8 @@ static pthread_mutex_t global_time_seq_lock;
 
 //in network byte order.
 static if_info_t global_tunif;
-static if_info_t *global_if_list;
+static if_info_t * global_if_list = NULL;
+static forwarding_table_t * global_forwarding_table = NULL;
 
 static char global_exe_path[PATH_LEN] = "\0";
 static char global_json_path[PATH_LEN] = "\0";
@@ -198,7 +191,6 @@ int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t d
  * >1: the ID of other tunnel server
  * if next_hop_id == global_self_id, return 1
 */
-uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src);
 uint16_t get_dst_id(uint32_t ip_dst, uint32_t ip_src);
 
 int chnroute_add(char * data_path, uint32_t gw_ip, int table, int gw_dev);
@@ -233,9 +225,10 @@ void clean_lock_all(void *arg)
 
 int init_global_values()
 {
-    if(init_route_lock() < 0)
+    global_forwarding_table = forwarding_table_init(FORWARDING_TABLE_SIZE);
+    if(global_forwarding_table == NULL)
     {
-        ERROR(0, "init_route_lock");
+        ERROR(0, "forwarding_table_init");
         return -1;
     }
     if(pthread_mutex_init(&global_stat_lock, NULL) != 0)
@@ -258,7 +251,7 @@ int init_global_values()
 
 int destory_global_values()
 {
-    destroy_route_lock();
+    forwarding_table_destroy(global_forwarding_table);
     pthread_mutex_destroy(&global_stat_lock);
     pthread_mutex_destroy(&global_time_seq_lock);
 
@@ -527,7 +520,7 @@ int main(int argc, char *argv[])
                 global_trusted_ip_cnt++;
             }
         }
-        merge_sort(global_trusted_ip, global_trusted_ip_cnt);
+        merge_sort_int(global_trusted_ip, global_trusted_ip_cnt);
     }
 
 
@@ -933,36 +926,16 @@ int chnroute_del(char * data_path, int table)
     return chnroute(data_path, 0, 0, table, 1);
 }
 
-uint16_t get_next_hop_id(uint32_t ip_dst, uint32_t ip_src)
-{
-    uint16_t next_hop_id;
-    next_hop_id = get_route(ip_dst, ip_src);
-    if(0 == next_hop_id)
-    {
-        uint32_t next_hop_ip = get_sys_iproute(ip_dst, ip_src, global_if_list);
-        //next_hop_ip is in tunif's subnet
-        if((next_hop_ip & global_tunif.mask) == (global_tunif.addr & global_tunif.mask))
-            next_hop_id = (uint16_t)ntohl(next_hop_ip);
-        else  //this limits the use of ID 0.1, 0.1 cann't be used by any peer, it always indicates local.
-            next_hop_id = 1;
-
-        if(global_self_id == next_hop_id)
-            next_hop_id = 1;
-        add_route(next_hop_id, ip_dst, ip_src);
-    }
-    return next_hop_id;
-}
-
 uint16_t get_dst_id(uint32_t ip_dst, uint32_t ip_src)
 {
     // ip_dst is in tunif's subnet
     if((ip_dst & global_tunif.mask) == (global_tunif.addr & global_tunif.mask))
         return (uint16_t)ntohl(ip_dst);
 
-    // ip_dst is via default gateway
-    // todo: get the default gateway should be enough
     uint16_t next_hop_id;
-    next_hop_id = get_route(ip_dst, ip_src);
+    // next_hop_id = get_route(ip_dst, ip_src);
+    next_hop_id = forwarding_table_get(global_forwarding_table, ip_dst, ip_src);
+    // INFO("next_hop_id: %d", next_hop_id);
     if(0 == next_hop_id)
     {
         uint32_t next_hop_ip = get_sys_iproute(ip_dst, ip_src, global_if_list);
@@ -974,7 +947,8 @@ uint16_t get_dst_id(uint32_t ip_dst, uint32_t ip_src)
 
         if(global_self_id == next_hop_id)
             next_hop_id = 1;
-        add_route(next_hop_id, ip_dst, ip_src);
+        // add_route(next_hop_id, ip_dst, ip_src);
+        forwarding_table_put(global_forwarding_table, ip_dst, ip_src, next_hop_id);
     }
     return next_hop_id;
 }
@@ -1139,7 +1113,7 @@ void* update_secret(void *arg)
                         global_trusted_ip[global_trusted_ip_cnt] = peer_table[i]->path_array[0].peeraddr.sin_addr.s_addr;
                         global_trusted_ip_cnt++;
                     }
-                merge_sort(global_trusted_ip, global_trusted_ip_cnt);
+                merge_sort_int(global_trusted_ip, global_trusted_ip_cnt);
             }
 
             pre = global_secret_change;
@@ -1192,8 +1166,8 @@ void* reset_link_route(void *arg)
             if(collect_if_info(&global_if_list) != 0)
                 continue;
 
-            //must clear if_info_t first, then clear_route
-            if(clear_route() != 0)
+            //must clear if_info_t first, then forwarding_table_clear
+            if(forwarding_table_clear(global_forwarding_table) != 0)
                 continue;
 
             // DEBUG("RTNETLINK: route table reset.");
@@ -1735,7 +1709,7 @@ void* server_recv(void *arg)
         if(CHECK_RESTRICTED_IP && peer_table[src_id] != NULL && peer_table[src_id]->restricted == true)
         {
             //if dst_id == global_self_id, don't ckeck but write to tunif
-            if(dst_id != global_self_id && binary_search(global_trusted_ip, 0, global_trusted_ip_cnt, peeraddr.sin_addr.s_addr) == -1)
+            if(dst_id != global_self_id && binary_search_int(global_trusted_ip, 0, global_trusted_ip_cnt, peeraddr.sin_addr.s_addr) == -1)
             {
                 DEBUG("tunif %s received packet from %d.%d to %d.%d: src_id addr not trusted!", 
                     global_tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
