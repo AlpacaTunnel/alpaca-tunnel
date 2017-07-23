@@ -655,3 +655,80 @@ int get_rt_table(const char * table)
     return index;
 }
 
+/*
+ * action = 0, add
+ * action = 1, del
+*/
+int chnroute(char * data_path, uint32_t gw_ip, int gw_dev, int table, int action)
+{
+    if(access(data_path, R_OK) == -1)
+    {
+        ERROR(errno, "cann't read route data: %s", data_path);
+        return -1;
+    }
+    
+    FILE *chnroute_file = NULL;
+    if((chnroute_file = fopen(data_path, "r")) == NULL)
+    {
+        ERROR(errno, "open file: %s", data_path);
+        return -1;
+    }
+
+    INFO("route_data: %s", data_path);
+
+    int i = 1;
+    size_t len = 1024;
+    char *line = (char *)malloc(len);
+    while(-1 != getline(&line, &len, chnroute_file))
+    {
+        char *ip_str = NULL;
+        char *mask_str = NULL;
+        ip_str = strtok(line, "/");
+        mask_str = strtok(NULL, "/");
+        
+        int mask = 0;
+        if(mask_str != NULL)
+            mask = atoi(mask_str);
+    
+        if(mask < 1)
+        {
+            WARNING("line %d, mask may be wrong or too small: %s", i, mask_str);
+            continue;
+        }
+        else
+        {
+            uint32_t ip_dst_tmp;
+            if(inet_pton(AF_INET, ip_str, &ip_dst_tmp) == 1)
+            {
+                if(action == 0)
+                    add_sys_iproute(ip_dst_tmp, mask, gw_ip, gw_dev, table);
+                else if(action == 1)
+                    del_sys_iproute(ip_dst_tmp, mask, gw_ip, gw_dev, table);
+                else
+                    WARNING("chnroute action not supported: %d", action);
+            }
+            else
+                WARNING("line %d, IP may be wrong: %s", i, ip_str);
+        }
+        i++;
+    }
+    free(line);
+    fclose(chnroute_file);
+    
+    INFO("end chnroute");
+
+    return 0;
+}
+
+int chnroute_add(char * data_path, uint32_t gw_ip, int table, int gw_dev)
+{
+    INFO("start add chnroute");
+    return chnroute(data_path, gw_ip, gw_dev, table, 0);
+}
+
+int chnroute_del(char * data_path, int table)
+{
+    INFO("start del chnroute");
+    return chnroute(data_path, 0, 0, table, 1);
+}
+

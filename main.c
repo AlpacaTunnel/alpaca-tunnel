@@ -5,8 +5,6 @@
 #include <pthread.h>
 #include <sys/ioctl.h>
 #include <sys/inotify.h>
-#include <sys/timerfd.h>
-#include <sys/epoll.h>
 
 #include "aes.h"
 #include "route.h"
@@ -21,7 +19,7 @@
 #include "data-struct/data-struct.h"
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "4.2.2"
+#define VERSION         "4.2.3"
 
 /*
  * Config file path choose order:
@@ -49,7 +47,7 @@
 //length of aes key must be 128, 192 or 256
 #define AES_KEY_LEN 128
 #define DEFAULT_PORT 1984
-#define FORWARDING_TABLE_SIZE 1024
+#define FORWARDING_TABLE_SIZE 10240
 
 #define MAX_DELAY_TIME 10  //max delay 10 seconds. if an packet delayed more than 10s, it will be treated as new packet.
 
@@ -135,7 +133,6 @@ static uint16_t global_self_id = 0;
 static uint global_pkt_cnt = 0;
 static pthread_mutex_t global_stat_lock;
 static pthread_mutex_t global_time_seq_lock;
-// static pthread_mutex_t global_tick_queue_lock;
 
 //in network byte order.
 static if_info_t global_tunif;
@@ -153,10 +150,9 @@ static byte global_buf_group_psk[2*AES_TEXT_LEN] = "FUCKnimadeGFW!";
 static int global_tunfd, global_sockfd;
 static uint32_t global_local_time;
 //static uint32_t global_local_seq;
-static int64_t* global_trusted_ip = NULL;  // int64_t can hold uint32_t(IPv4 address)
+static int64_t * global_trusted_ip = NULL;  // int64_t can hold uint32_t(IPv4 address)
 static int global_trusted_ip_cnt = 0;
 
-// static queue_t global_tick_queue;
 
 static uint16_t * global_forwarders = NULL;
 static int global_forwarder_nr = 0;
@@ -184,17 +180,10 @@ int usage(char *pname);
 void sig_handler(int signum);
 int flow_filter(uint32_t pkt_time, uint32_t pkt_seq, uint16_t src_id, uint16_t dst_id, peer_profile_t ** peer_table);
 
-/* get next hop id form route_table or system route table
- * return value:
- * 0 : actually, will never return 0. instead, return 1.
- * 1 : local or link dst, should write to tunnel interface
- * >1: the ID of other tunnel server
- * if next_hop_id == global_self_id, return 1
+/* get gw_id form route_table or system route table
+ * return 0 if not found. actually, will never return 0.
 */
 uint16_t get_dst_id(uint32_t ip_dst, uint32_t ip_src);
-
-int chnroute_add(char * data_path, uint32_t gw_ip, int table, int gw_dev);
-int chnroute_del(char * data_path, int table);
 
 
 int usage(char *pname)
@@ -218,7 +207,6 @@ void clean_lock_all(void *arg)
 
     //no thread should exit during process runing, so I put all unlock here, just for future debug.
     pthread_mutex_unlock(&global_stat_lock);
-    unlock_route_mutex();
 
     return;
 }
@@ -791,7 +779,7 @@ _END:
             char * local_route;
             queue_get(config.local_routes_bakup, (void **)&local_route, NULL);
             del_iproute(local_route, "default");
-            DEBUG("add local_route: %s to table default", local_route);
+            DEBUG("del local_route: %s from table default", local_route);
         }
     }
 
@@ -854,103 +842,26 @@ void sig_handler(int signum)
 }
 
 
-int chnroute(char * data_path, uint32_t gw_ip, int gw_dev, int table, int action)
-{
-    if(access(data_path, R_OK) == -1)
-    {
-        ERROR(errno, "cann't read route data: %s", data_path);
-        return -1;
-    }
-    
-    FILE *chnroute_file = NULL;
-    if((chnroute_file = fopen(data_path, "r")) == NULL)
-    {
-        ERROR(errno, "open file: %s", data_path);
-        return -1;
-    }
-    
-    INFO("route_data: %s", data_path);
-    INFO("start chnroute");
-    
-    int i = 1;
-    size_t len = 1024;
-    char *line = (char *)malloc(len);
-    while(-1 != getline(&line, &len, chnroute_file))
-    {
-        char *ip_str = NULL;
-        char *mask_str = NULL;
-        ip_str = strtok(line, "/");
-        mask_str = strtok(NULL, "/");
-        
-        int mask = 0;
-        if(mask_str != NULL)
-            mask = atoi(mask_str);
-    
-        if(mask < 1)
-        {
-            WARNING("line %d, mask may be wrong or too small: %s", i, mask_str);
-            continue;
-        }
-        else
-        {
-            uint32_t ip_dst_tmp;
-            if(inet_pton(AF_INET, ip_str, &ip_dst_tmp) == 1)
-            {
-                if(action == 0)
-                    add_sys_iproute(ip_dst_tmp, mask, gw_ip, gw_dev, table);
-                else if(action == 1)
-                    del_sys_iproute(ip_dst_tmp, mask, gw_ip, gw_dev, table);
-                else
-                    WARNING("chnroute action not supported: %d", action);
-            }
-            else
-                WARNING("line %d, IP may be wrong: %s", i, ip_str);
-        }
-        i++;
-    }
-    free(line);
-    fclose(chnroute_file);
-    
-    INFO("end chnroute");
-
-    return 0;
-}
-
-int chnroute_add(char * data_path, uint32_t gw_ip, int table, int gw_dev)
-{
-    return chnroute(data_path, gw_ip, gw_dev, table, 0);
-}
-
-int chnroute_del(char * data_path, int table)
-{
-    return chnroute(data_path, 0, 0, table, 1);
-}
-
 uint16_t get_dst_id(uint32_t ip_dst, uint32_t ip_src)
 {
     // ip_dst is in tunif's subnet
     if((ip_dst & global_tunif.mask) == (global_tunif.addr & global_tunif.mask))
         return (uint16_t)ntohl(ip_dst);
 
-    uint16_t next_hop_id;
-    // next_hop_id = get_route(ip_dst, ip_src);
-    next_hop_id = forwarding_table_get(global_forwarding_table, ip_dst, ip_src);
-    // INFO("next_hop_id: %d", next_hop_id);
-    if(0 == next_hop_id)
+    uint16_t gw_id = forwarding_table_get(global_forwarding_table, ip_dst, ip_src);
+    if(0 == gw_id)
     {
-        uint32_t next_hop_ip = get_sys_iproute(ip_dst, ip_src, global_if_list);
-        //next_hop_ip is in tunif's subnet
-        if((next_hop_ip & global_tunif.mask) == (global_tunif.addr & global_tunif.mask))
-            next_hop_id = (uint16_t)ntohl(next_hop_ip);
-        else  //this limits the use of ID 0.1, 0.1 cann't be used by any peer, it always indicates local.
-            next_hop_id = 1;
+        uint32_t gw_ip = get_sys_iproute(ip_dst, ip_src, global_if_list);
 
-        if(global_self_id == next_hop_id)
-            next_hop_id = 1;
-        // add_route(next_hop_id, ip_dst, ip_src);
-        forwarding_table_put(global_forwarding_table, ip_dst, ip_src, next_hop_id);
+        // gw_ip is in tunif's subnet.
+        // it's always true, since pkt is sent to the tunnel, it's gateway must be in the subnet.
+        if((gw_ip & global_tunif.mask) == (global_tunif.addr & global_tunif.mask))
+        {
+            gw_id = (uint16_t)ntohl(gw_ip);
+            forwarding_table_put(global_forwarding_table, ip_dst, ip_src, gw_id);
+        }
     }
-    return next_hop_id;
+    return gw_id;
 }
 
 
@@ -1337,7 +1248,7 @@ void* server_read(void *arg)
         src_id = global_self_id;
         // INFO("==========>>>dst_id: %d, src_id: %d", dst_id, src_id);
 
-        if(NULL == peer_table[dst_id] || 1 == dst_id || global_self_id == dst_id)
+        if(NULL == peer_table[dst_id] || 0 == dst_id || global_self_id == dst_id)
         {
             DEBUG("tunif %s read packet to peer %d.%d: invalid peer!", global_tunif.name, dst_id/256, dst_id%256);
             continue;

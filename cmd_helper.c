@@ -8,10 +8,6 @@
 #include "log.h"
 #include "ip.h"
 
-#ifndef IPV4_MAX_LEN
-    #define IPV4_MAX_LEN 17
-#endif
-
 static int iptables_nat_set = 0;
 static int iptables_tcpmss_set = 0;
 
@@ -126,14 +122,14 @@ int get_default_route(char * default_gw_ip, char * default_gw_dev)
     if(default_gw_dev)
         default_gw_dev[0] = '\0';
 
-    char tmp_str[IPV4_MAX_LEN];
+    char tmp_str[IPV4_LEN];
     uint32_t tmp_ip;
-    strncpy(tmp_str, c, IPV4_MAX_LEN);
+    strncpy(tmp_str, c, IPV4_LEN);
 
     if(inet_pton(AF_INET, tmp_str, &tmp_ip) == 1)
     {
         if(default_gw_ip)
-            strncpy(default_gw_ip, c, IPV4_MAX_LEN);
+            strncpy(default_gw_ip, c, IPV4_LEN);
     
         c = strtok(NULL, delim);
         c = strtok(NULL, delim);

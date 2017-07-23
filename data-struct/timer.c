@@ -1,11 +1,11 @@
-#include "timer.h"
-
 /*
  * These timespec_* manipulation functions were taken from http://lxr.free-electrons.com/source/include/linux/time.h
  * and http://lxr.free-electrons.com/source/kernel/time/time.c. I can't find a header to include, so I copied them.
  *
  * And the timer was inspired by CycloneTCP, http://www.oryx-embedded.com/doc/tcp__timer_8c_source.html
 */
+
+#include "timer.h"
 
 #define MSEC_PER_SEC    1000L
 #define NSEC_PER_MSEC   1000000L

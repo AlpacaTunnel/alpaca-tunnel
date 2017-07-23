@@ -1,7 +1,10 @@
+/*
+ * This file defines the header in Header_format.png
+*/
+
+
 #ifndef HEADER_H_
 #define HEADER_H_
-
-/* this file define the header in Header_format.png */
 
 #define HEADER_LEN 16
 #define ICV_LEN 16

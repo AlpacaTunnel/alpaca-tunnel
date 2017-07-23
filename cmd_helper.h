@@ -1,7 +1,9 @@
+/*
+ * functions to run system cmd
+*/
+
 #ifndef CMD_HELPER_H_
 #define CMD_HELPER_H_
-
-/* functions to run system cmd */
 
 
 #include "data-struct/data-struct.h"
