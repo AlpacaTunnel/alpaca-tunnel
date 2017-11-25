@@ -1,5 +1,5 @@
-#ifndef TUNNEL_H_
-#define TUNNEL_H_
+#ifndef TUNIF_H_
+#define TUNIF_H_
 
 
 int tun_alloc(char *dev);

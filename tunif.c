@@ -7,8 +7,8 @@
 #include <linux/if_tun.h>
 #include <net/if.h>
 
-#include "tunnel.h"
 #include "log.h"
+#include "tunif.h"
 
 
 int tun_alloc(char *dev) 

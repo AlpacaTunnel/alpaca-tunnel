@@ -2,11 +2,12 @@
  * functions to run system cmd
 */
 
-#ifndef CMD_HELPER_H_
-#define CMD_HELPER_H_
+#ifndef CMD_H_
+#define CMD_H_
 
 
 #include "data-struct/data-struct.h"
+
 
 int run_cmd_list(queue_t * cmd_list);  // after calling this func, cmd_list will be emptied.
 

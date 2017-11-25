@@ -8,10 +8,12 @@
 #include <string.h>
 #include <ctype.h>
 
-#include "data-struct/jsmn.h"
 #include "log.h"
 #include "ip.h"
 #include "config.h"
+
+
+#define CONFIG_TOKEN_NR_MAX 1280  // max number of elements(each key or value is an element) in config file
 
 
 static int jsoneq(const char *json, jsmntok_t *tok, const char *s)
@@ -140,19 +142,19 @@ int load_config(const char * config_file, config_t * config)
         } 
         else if(jsoneq(json_string, &tok[i], "id") == 0) 
         {
-            int len_id = len < MAX_ID_LEN ? len : MAX_ID_LEN;
+            int len_id = len < HEAD_ID_MAX_LEN ? len : HEAD_ID_MAX_LEN;
             strncpy(config->id, start, len_id);
             i++;
         } 
         else if(jsoneq(json_string, &tok[i], "gateway") == 0) 
         {
-            int len_id = len < MAX_ID_LEN ? len : MAX_ID_LEN;
+            int len_id = len < HEAD_ID_MAX_LEN ? len : HEAD_ID_MAX_LEN;
             strncpy(config->gateway, start, len_id);
             i++;
         } 
         else if(jsoneq(json_string, &tok[i], "net") == 0) 
         {
-            int len_id = len < MAX_ID_LEN ? len : MAX_ID_LEN;
+            int len_id = len < HEAD_ID_MAX_LEN ? len : HEAD_ID_MAX_LEN;
             strncpy(config->net, start, len_id);
             i++;
         } 
@@ -376,14 +378,14 @@ int check_config(config_t * config)
     }
 
     int self_id = inet_ptons(config->id);
-    if(self_id <= 1 || self_id >= MAX_ID)
+    if(self_id <= 1 || self_id >= HEAD_MAX_ID)
     {
         ERROR(0, "ID must between 0.2 and 255.254: %s", config->id);
         return -1;
     }
 
     int net_id = inet_ptons(config->net);
-    if(net_id < 256 || net_id > MAX_ID)
+    if(net_id < 256 || net_id > HEAD_MAX_ID)
     {
         ERROR(0, "NET must between 1.0 and 255.255: %s", config->net);
         return -1;
@@ -398,30 +400,30 @@ int check_config(config_t * config)
         }
 
         int gateway_id = inet_ptons(config->gateway);
-        if(gateway_id <= 1 || gateway_id >= MAX_ID)
+        if(gateway_id <= 1 || gateway_id >= HEAD_MAX_ID)
         {
             ERROR(0, "gateway must between 0.2 and 255.254: %s", config->gateway);
             return -1;
         }
     }
 
-    config->forwarder_nr = 0;
+    // config->forwarder_nr = 0;
 
-    while(!queue_is_empty(config->forwarders))
-    {
-        config->forwarder_nr++;
-        char * forwarder_str = NULL;
-        queue_get(config->forwarders, (void **)&forwarder_str, NULL);
-        int forwarder_id = inet_ptons(forwarder_str);
-        if(forwarder_id <= 1 || forwarder_id >= MAX_ID)
-        {
-            ERROR(0, "forwarder must between 0.2 and 255.254: %s", forwarder_str);
-            return -1;
-        }
-        INFO("forwarder: %s", forwarder_str);
-    }
-    if(config->forwarder_nr > 4)
-        WARNING("too many forwarders!");
+    // while(!queue_is_empty(config->forwarders))
+    // {
+    //     config->forwarder_nr++;
+    //     char * forwarder_str = NULL;
+    //     queue_get(config->forwarders, (void **)&forwarder_str, NULL);
+    //     int forwarder_id = inet_ptons(forwarder_str);
+    //     if(forwarder_id <= 1 || forwarder_id >= HEAD_MAX_ID)
+    //     {
+    //         ERROR(0, "forwarder must between 0.2 and 255.254: %s", forwarder_str);
+    //         return -1;
+    //     }
+    //     INFO("forwarder: %s", forwarder_str);
+    // }
+    // if(config->forwarder_nr > MAX_FORWARDER_CNT)
+        // WARNING("too many forwarders, only %d allowed!", MAX_FORWARDER_CNT);
 
     if(config->port < 0 || config->port > 65534)
     {
@@ -429,9 +431,9 @@ int check_config(config_t * config)
         return -1;
     }
 
-    if(config->mtu < TUN_MTU_MIN || config->mtu > TUN_MTU)
+    if(config->mtu < TUN_MTU_MIN || config->mtu > TUN_MTU_MAX)
     {
-        ERROR(0, "MTU must be between %d and %d: %d", TUN_MTU_MIN, TUN_MTU, config->mtu);
+        ERROR(0, "MTU must be between %d and %d: %d", TUN_MTU_MIN, TUN_MTU_MAX, config->mtu);
         return -1;
     }
 

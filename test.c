@@ -7,7 +7,10 @@
 
 
 #include "data-struct/data-struct.h"
+#include "log.h"
 #include "route.h"
+#include "monitor.h"
+#include "signal.h"
 
 
 
@@ -218,25 +221,88 @@ int test_queue()
 
 /**************************** test queue *********************************************/
 
-/**************************** test tick_queue *********************************************/
+/**************************** test delay_queue *********************************************/
 
 
 
-int test_tick_queue()
+int test_delay_queue()
 {
-    tick_queue_t * q = tick_queue_init();
-    // printf("%s\n", (char*)tick_queue_get(q));
+    delay_queue_t * q = delay_queue_init();
+    // printf("%s\n", (char*)delay_queue_get(q));
 
-    tick_queue_put(q, "tick217", 217);
-    tick_queue_put(q, "tick73", 73);
-    tick_queue_put(q, "tick170", 170);
+    delay_queue_put(q, "tick217", 217);
+    delay_queue_put(q, "tick73", 73);
+    delay_queue_put(q, "tick170", 170);
     while(true)
-        printf("%s\n", (char*)tick_queue_get(q));
+        printf("%s\n", (char*)delay_queue_get(q));
     return 0;
 }
 
 
-/**************************** test tick_queue *********************************************/
+/**************************** test delay_queue *********************************************/
+
+
+/**************************** test monitor *********************************************/
+
+
+void printabc(void * arg)
+{
+    char * a = (char *)arg;
+    ERROR(0, "a is: %s\n", a);
+    return;
+}
+
+
+int test_monitor()
+{
+    monitor_t * m = monitor_file_start("/tmp/abc", 3, NULL, NULL);
+    // monitor_file_stop(m);
+
+    monitor_t * r = monitor_route_start(4, 3, printabc, "route ipv4");
+    // monitor_route_stop(r);
+
+    monitor_t * c = cronjob_start(3, printabc, "cronjob");
+    // cronjob_stop(c);
+
+    while(true)
+        sleep(1);
+
+    return 0;
+}
+
+
+/**************************** test monitor *********************************************/
+
+
+
+/**************************** test monitor *********************************************/
+
+
+void printabc2(void * arg)
+{
+    char * a = (char *)arg;
+    ERROR(0, "a is: %s\n", a);
+    return;
+}
+
+
+int test_signal()
+{
+    signal_init();
+    signal_install(SIGINT, printabc, "sigint");
+    signal_install(SIGINT, printabc, "sigint");
+    signal_install(SIGTERM, printabc, "sigterm");
+
+    while(true)
+        sleep(1);
+
+    return 0;
+}
+
+
+/**************************** test monitor *********************************************/
+
+
 
 
 /**************************** test forwarding_table *********************************************/
@@ -276,10 +342,16 @@ int test_forwarding_table()
 
 int main(void)
 {
+    set_log_level(LOG_LEVEL_DEBUG);
+    set_log_time();
+    set_log_color();
+
     // test_dll();
     // test_queue();
-    // test_tick_queue();
-    test_forwarding_table();
+    // test_delay_queue();
+    // test_forwarding_table();
+    test_monitor();
+    // test_signal();
 
     return 0;
 }

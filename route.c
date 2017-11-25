@@ -8,10 +8,17 @@
 #include <unistd.h>
 #include <ifaddrs.h>
 #include <ctype.h>
+#include <arpa/inet.h>
+#include <linux/rtnetlink.h>
 
-#include "route.h"
-#include "log.h"
+
 #include "data-struct/data-struct.h"
+#include "log.h"
+#include "route.h"
+
+
+#define ROUTE_TYPE_IPV4 0
+#define ROUTE_TYPE_IPV6 1
 
 
 #define NLMSG_TAIL(nmsg) ((struct rtattr *) (((void *) (nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))

@@ -32,15 +32,7 @@
 
 #include <stdint.h>
 #include <net/if.h>
-#include <sys/types.h>
-#include <arpa/inet.h>
-#include <linux/if_link.h>
-#include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-
-
-#define ROUTE_TYPE_IPV4 0
-#define ROUTE_TYPE_IPV6 1
 
 
 typedef struct

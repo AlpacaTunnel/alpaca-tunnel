@@ -8,7 +8,7 @@
 
 #include <pthread.h>
 
-#include "bool.h"
+#include "types.h"
 #include "linked-list.h"
 
 

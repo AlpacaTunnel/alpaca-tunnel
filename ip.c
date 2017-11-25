@@ -2,14 +2,22 @@
 #include <ctype.h>
 #include <netdb.h>
 #include <stdlib.h>
-#include <stdio.h>
 #include <arpa/inet.h>
+#include <linux/ip.h>
+// #include <linux/tcp.h>
+// #include <linux/udp.h>
 
 #include "ip.h"
-#include "log.h"
 
 
-static uint16_t global_ipv4_mask_fragoff;
+#define IPV4_HEAD_LEN 20
+#define IPV4_OFFSET_SADDR 12
+#define IPV4_OFFSET_DADDR 16
+// #define TCP_HEAD_LEN 40
+// #define UDP_HEAD_LEN 20
+#define IPV4_OFFSET_CSUM 10
+#define IPV4_MASK_FRAGOFF 0x1FFF  // in host byte order
+
 
 uint16_t inet_ptons(const char *a)
 {
@@ -46,7 +54,7 @@ uint16_t inet_ptons(const char *a)
     return ( n1 * 256 + n2 );
 }
 
-int hostname_to_ip(const char *hostname , char *ip)
+int hostname_to_ip(const char *hostname, char *ip)
 {
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_in *h;
@@ -58,7 +66,7 @@ int hostname_to_ip(const char *hostname , char *ip)
     int rv = getaddrinfo(hostname, "http", &hints, &servinfo);
     if(rv != 0) 
     {
-        ERROR(errno, "getaddrinfo: %s: %s", hostname, gai_strerror(rv));
+        // perror("getaddrinfo: %s: %s", hostname, gai_strerror(rv));
         return -1;
     }
  
@@ -93,6 +101,7 @@ uint16_t do_csum(uint16_t old_sum, uint32_t old_ip, uint32_t new_ip)
     return new_sum;
 }
 
+
 int ip_dnat(byte* ip_load, uint32_t new_ip)
 {
     uint16_t csum = 0;
@@ -103,17 +112,18 @@ int ip_dnat(byte* ip_load, uint32_t new_ip)
     memcpy(&ip_load[IPV4_OFFSET_DADDR], &new_ip, 4);
     csum = do_csum(ip_h.check, ip_h.daddr, new_ip);
     memcpy(&ip_load[IPV4_OFFSET_CSUM], &csum, 2);     //recalculated ip checksum
+
     //if packet is fragmented, can only recaculate the first fragment.
     //Because the following packets don't have a layer 4 header!
-    global_ipv4_mask_fragoff = htons(IPV4_MASK_FRAGOFF);
-    if(6 == ip_h.protocol && (global_ipv4_mask_fragoff & ip_h.frag_off) == 0 )    //tcp
+    uint16_t ipv4_mask_fragoff = htons(IPV4_MASK_FRAGOFF);
+    if(6 == ip_h.protocol && (ipv4_mask_fragoff & ip_h.frag_off) == 0 )    //tcp
     {
         int csum_off = 4*ip_h.ihl + 16;
         memcpy(&csum, ip_load+csum_off, 2);
         csum = do_csum(csum, ip_h.daddr, new_ip);
         memcpy(ip_load+csum_off, &csum, 2);    //recalculated tcp checksum
     }
-    else if(17 == ip_h.protocol && (global_ipv4_mask_fragoff & ip_h.frag_off) == 0 )  //udp
+    else if(17 == ip_h.protocol && (ipv4_mask_fragoff & ip_h.frag_off) == 0 )  //udp
     {
         int csum_off = 4*ip_h.ihl + 6;
         memcpy(&csum, ip_load+csum_off, 2);
@@ -122,6 +132,7 @@ int ip_dnat(byte* ip_load, uint32_t new_ip)
     }
     return 0;
 }
+
 
 int ip_snat(byte* ip_load, uint32_t new_ip)
 {
@@ -133,17 +144,18 @@ int ip_snat(byte* ip_load, uint32_t new_ip)
     memcpy(&ip_load[IPV4_OFFSET_SADDR], &new_ip, 4);
     csum = do_csum(ip_h.check, ip_h.saddr, new_ip);
     memcpy(&ip_load[IPV4_OFFSET_CSUM], &csum, 2);     //recalculated ip checksum
+
     //if packet is fragmented, can only recaculate the first fragment.
     //Because the following packets don't have a layer 4 header!
-    global_ipv4_mask_fragoff = htons(IPV4_MASK_FRAGOFF);
-    if(6 == ip_h.protocol && (global_ipv4_mask_fragoff & ip_h.frag_off) == 0 )    //tcp
+    uint16_t ipv4_mask_fragoff = htons(IPV4_MASK_FRAGOFF);
+    if(6 == ip_h.protocol && (ipv4_mask_fragoff & ip_h.frag_off) == 0 )    //tcp
     {
         int csum_off = 4*ip_h.ihl + 16;
         memcpy(&csum, ip_load+csum_off, 2);
         csum = do_csum(csum, ip_h.saddr, new_ip);
         memcpy(ip_load+csum_off, &csum, 2);    //recalculated tcp checksum
     }
-    else if(17 == ip_h.protocol && (global_ipv4_mask_fragoff & ip_h.frag_off) == 0 )  //udp
+    else if(17 == ip_h.protocol && (ipv4_mask_fragoff & ip_h.frag_off) == 0 )  //udp
     {
         int csum_off = 4*ip_h.ihl + 6;
         memcpy(&csum, ip_load+csum_off, 2);

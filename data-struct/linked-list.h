@@ -6,7 +6,7 @@
 #ifndef LINKED_LIST_H_
 #define LINKED_LIST_H_
 
-#include "bool.h"
+#include "types.h"
 
 
 struct dll_node

@@ -2,7 +2,7 @@
 #define MY_STRING_H_
 
 
-#include "bool.h"
+#include "types.h"
 
 
 void *aligned_malloc(size_t size);

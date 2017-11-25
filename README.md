@@ -32,8 +32,11 @@ smaller IDs for servers, bigger IDs for clients.
 
 Servers and clients must have the same GROUP name.
 
-The shell version of chnroute is too slow, so I write a C version. Edit chnroute object
-in the json to use it.
+For the client, you should specify a gateway. You may also specify some forwarders
+if you have multiple paths, these forwarders will forward packets to the gateway.
+
+The shell version of chnroute is too slow, so I write a C version. Edit chnroute
+object in the json to use it.
 
 
 Usage
@@ -85,9 +88,6 @@ refer to <https://github.com/zserge/jsmn>.
 
 Bugs and Issues
 ----------------
-
-1. edit secrets on fly may cause restart or 100% CPU usage. better restart after edit the secrets.
-2. some other thing may cause 100% CPU usage, don't know the reason yet.
 
 
 

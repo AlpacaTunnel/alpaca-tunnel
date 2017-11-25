@@ -4,12 +4,15 @@
 #include <net/if.h>
 #include <arpa/inet.h>
 
-#include "cmd_helper.h"
 #include "log.h"
-#include "ip.h"
+#include "cmd.h"
 
-static int iptables_nat_set = 0;
-static int iptables_tcpmss_set = 0;
+// enouth space for IPv4 and IPv6
+#define IP_MAX_LEN 64
+
+
+static int global_nat_set = 0;
+static int global_tcpmss_set = 0;
 
 
 int run_cmd_list(queue_t * cmd_list)
@@ -122,14 +125,14 @@ int get_default_route(char * default_gw_ip, char * default_gw_dev)
     if(default_gw_dev)
         default_gw_dev[0] = '\0';
 
-    char tmp_str[IPV4_LEN];
+    char tmp_str[IP_MAX_LEN];
     uint32_t tmp_ip;
-    strncpy(tmp_str, c, IPV4_LEN);
+    strncpy(tmp_str, c, IP_MAX_LEN);
 
     if(inet_pton(AF_INET, tmp_str, &tmp_ip) == 1)
     {
         if(default_gw_ip)
-            strncpy(default_gw_ip, c, IPV4_LEN);
+            strncpy(default_gw_ip, c, IP_MAX_LEN);
     
         c = strtok(NULL, delim);
         c = strtok(NULL, delim);
@@ -256,7 +259,7 @@ int change_iptables_nat(const char * source, int action)
         return -1;
 
     int rc = 0;
-    char * cmd = (char *)malloc(100 + IP_LEN);
+    char * cmd = (char *)malloc(100 + IP_MAX_LEN);
     if(cmd == NULL)
     {
         ERROR(errno, "malloc failed");
@@ -283,7 +286,7 @@ int add_iptables_nat(const char * source)
 {
     if(change_iptables_nat(source, 0) == 0)
     {
-        iptables_nat_set = 1;
+        global_nat_set = 1;
         return 0;
     }
     else
@@ -292,17 +295,17 @@ int add_iptables_nat(const char * source)
 
 int del_iptables_nat(const char * source)
 {
-    if(iptables_nat_set == 1)
+    if(global_nat_set == 1)
         return change_iptables_nat(source, 1);
     else
         return 0;
 }
 
 
-int change_iptables_tcpmss(int mss, int action)
+static int change_iptables_tcpmss(int mss, int action)
 {
-    if(mss < TCPMSS_MIN || mss > TCPMSS_MAX)
-        return -1;
+    // if(mss < TCPMSS_MIN || mss > TCPMSS_MAX)
+        // return -1;
 
     int rc = 0;
     char * cmd = (char *)malloc(100);
@@ -332,7 +335,7 @@ int add_iptables_tcpmss(int mss)
 {
     if(change_iptables_tcpmss(mss, 0) == 0)
     {
-        iptables_tcpmss_set = 1;
+        global_tcpmss_set = 1;
         return 0;
     }
     else
@@ -341,7 +344,7 @@ int add_iptables_tcpmss(int mss)
 
 int del_iptables_tcpmss(int mss)
 {
-    if(iptables_tcpmss_set == 1)
+    if(global_tcpmss_set == 1)
         return change_iptables_tcpmss(mss, 1);
     else
         return 0;

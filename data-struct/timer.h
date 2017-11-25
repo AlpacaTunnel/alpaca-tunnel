@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include <sys/timerfd.h>
 
-#include "bool.h"
+#include "types.h"
 
 
 typedef struct 

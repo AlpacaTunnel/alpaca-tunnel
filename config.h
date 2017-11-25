@@ -5,18 +5,30 @@
 #ifndef CONFIG_H_
 #define CONFIG_H_
 
-#include <stdint.h>
 
 #include "data-struct/data-struct.h"
+#include "header.h"
 
-//reserved ID: 0.0, 0.1, 255.255, any server/client cann't use.
-#define MAX_ID 65535
-#define MAX_ID_LEN 7  // 254.254
-#define CONFIG_TOKEN_NR_MAX 1280  // max number of elements(each key or value is an element) in config file
 
-//tunnel MTU must not be greater than 1440
-#define TUN_MTU 1440
-#define TUN_MTU_MIN 68
+/*
+ * Config file path choose order:
+ * 1) if user specify the path with -c, this path will be used.
+ * 2) if exe is located at `/usr/bin/`, config will be `/etc/alpaca-tunnel.d/config.json`.
+ * 3) if exe is located at `/usr/local/bin/`, config will be `/usr/local/etc/alpaca-tunnel.d/config.json`.
+ * 4) config will be at the relative path `alpaca-tunnel.d/config.json` to exe file.
+ *
+ * Secret file path choose order:
+ * 1) if user specify the path in json, this path will be used. if this path is a relative path, it's relative to the config json.
+ * 2) Otherwise, the secret file MUST be located at the relative path `./secrets` to the config json, NOT with exe!
+*/
+
+#define PATH_LEN 1024
+
+#define ABSOLUTE_PATH_TO_JSON        "/etc/alpaca-tunnel.d/config.json"
+#define ABSOLUTE_PATH_TO_JSON_LOCAL  "/usr/local/etc/alpaca-tunnel.d/config.json"
+#define RELATIVE_PATH_TO_JSON        "alpaca-tunnel.d/config.json"
+#define RELATIVE_PATH_TO_SECRETS     "secrets.txt"
+#define RELATIVE_PATH_TO_ROUTE       "route_data_cidr.txt"
 
 
 typedef struct
@@ -31,14 +43,14 @@ typedef struct
 {
     char * mode;  // server/client
     char * group;
-    char id[MAX_ID_LEN+1];  // 0.2 - 254.254
-    char net[MAX_ID_LEN+1];  // 10.17
-    char gateway[MAX_ID_LEN+1];
+    char id[HEAD_ID_MAX_LEN+1];  // 0.2 - 254.254
+    char net[HEAD_ID_MAX_LEN+1];  // 10.17
+    char gateway[HEAD_ID_MAX_LEN+1];
     int port;
     int mtu;
     char * log_level;
     char * secret_file;
-    int forwarder_nr;
+    // int forwarder_nr;
     chnroute_t * chnroute;
     queue_t * forwarders;   // a list of forwarder IDs, will send outter UDP to them
     queue_t * local_routes;   // a list of networks or hosts
@@ -50,9 +62,11 @@ typedef struct
     queue_t * post_down_cmds;
 } config_t;
 
+
 int free_config(config_t * configure);
 int load_config(const char * config_file, config_t * config);
 int get_log_level(char* log_level);
 int check_config(config_t * config);
+
 
 #endif

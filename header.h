@@ -6,8 +6,15 @@
 #ifndef HEADER_H_
 #define HEADER_H_
 
+#include "data-struct/data-struct.h"
+
+
+// reserved ID: 0.0, 0.1, 255.255, any server/client cann't use.
+#define HEAD_MAX_ID 65535
+#define HEAD_ID_MAX_LEN 7  // max text len, 254.254
+
 #define HEADER_LEN 16
-#define ICV_LEN 16
+#define HEAD_ICV_LEN 16
 #define HEAD_MORE_FALSE 0
 #define HEAD_MORE_TRUE  1
 #define HEAD_TYPE_DATA  0
@@ -17,13 +24,24 @@
 #define HEAD_FRAG_FALSE 0
 #define HEAD_FRAG_TRUE  1
 
-#define TIMER_TYPE_MID 0
-#define TIMER_TYPE_LAST 1
+#define HEAD_TTL_MIN 0
+#define HEAD_TTL_MAX 15
+#define HEAD_MAX_PATH 15
+#define MAX_FORWARDER_CNT 3  // pi_a is 2 bits, can hold only 4 forwarders, and pi==0 is reserved, so only 3 forwarders left
 
-#define TTL_MAX 0xF
-#define TTL_MIN 0
+#define PATH_LIFE_TIME 10  // if abs(last_time - path_array[i].last_time) > PATH_LIFE_TIME, don't send to this peeraddr
 
 #define HEADER_MAGIC 1990
+
+// tunnel MTU must not be greater than 1440
+#define TUN_MTU_MAX 1440
+#define TUN_MTU_MIN 68
+
+// the ID is 0.0 to 255.255, so the network must be 16 bits long. x.y.a.b/16
+#define TUN_NETMASK 0xFFFF0000
+#define TUN_MASK_LEN 16
+
+
 
 /*
   type: 0, L3 package
@@ -43,6 +61,7 @@ union type_len_m_u
     uint16_t             u16;
 };
 
+/*
 struct uint4_t
 {
     uint value : 4;
@@ -56,16 +75,16 @@ struct pi_s
 
 union pi_u
 {
-    struct pi_s  bit;
-    struct uint4_t      u4;
+    struct pi_s     bit;
+    struct uint4_t  u4;
 };
-
+*/
 
 struct ttl_pi_sd_s
 {
     uint        ttl        : 4;
-    uint        pi_a       : 2;    // path index
-    uint        pi_b       : 2;    // path index
+    uint        pi_a       : 2;    // path index for sender
+    uint        pi_b       : 2;    // path index for forwarder
     bool        si         : 1;    // source inside flag
     bool        di         : 1;    // dest inside flag
     uint        reserved   : 6;
@@ -102,6 +121,7 @@ union seq_rand_u
     struct seq_rand_s  bit;
     uint32_t           u32;
 };
+
 
 /*
   all data in header are stored in network bit/byte order.
