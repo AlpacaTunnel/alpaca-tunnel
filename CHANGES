@@ -7,6 +7,10 @@ Todo list:
 6. IPv6
 
 
+5.1.1 2017-11-26
+- add FORWARD rules to iptables
+
+
 5.1 2017-11-26
 - prevent routing table loop
 

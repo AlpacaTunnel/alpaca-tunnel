@@ -266,14 +266,33 @@ int change_iptables_nat(const char * source, int action)
         return -1;
     }
 
+    char * add_or_del;
     if(action == 0)
-        sprintf(cmd, "iptables -t nat -A POSTROUTING -s %s -j MASQUERADE", source);
+        add_or_del = "A";
     else
-        sprintf(cmd, "iptables -t nat -D POSTROUTING -s %s -j MASQUERADE", source);
+        add_or_del = "D";
+
+    sprintf(cmd, "iptables -%s POSTROUTING -t nat -s %s -j MASQUERADE", add_or_del, source);
 
     if(system(cmd) != 0)
     {
-        WARNING("change iptables nat rule failed.");
+        WARNING("change iptables NAT rule failed.");
+        rc = -1;
+    }
+
+    sprintf(cmd, "iptables -%s FORWARD -s %s -j ACCEPT", add_or_del, source);
+
+    if(system(cmd) != 0)
+    {
+        WARNING("change iptables FORWARD rule failed.");
+        rc = -1;
+    }
+
+    sprintf(cmd, "iptables -%s FORWARD -d %s -j ACCEPT", add_or_del, source);
+
+    if(system(cmd) != 0)
+    {
+        WARNING("change iptables FORWARD rule failed.");
         rc = -1;
     }
 

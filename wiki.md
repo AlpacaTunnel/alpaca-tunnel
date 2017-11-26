@@ -14,9 +14,15 @@ FAQ
 
 A: Restart pptp/l2tp tunnel, change iptables rules before vpn client connect to server, and try these two rules at the same time:
 
-    iptables -t nat -A POSTROUTING -s 10.5.5.0/24 -o eth0 -j MASQUERADE;
+    iptables -t nat -A POSTROUTING -s 10.17.0.0/16 -j MASQUERADE;
 
-    iptables -t nat -A POSTROUTING -s 10.5.5.0/24 -o eth0 -j SNAT --to-source 10.0.2.15
+    iptables -t nat -A POSTROUTING -s 10.17.0.0/16 -j SNAT --to-source 10.0.2.15
+
+And if you have Docker installed, it will change the filter table in FORWARD chain to default DROP target. So you may also enable FORWARD rule:
+
+    iptables -A FORWARD -s 10.17.0.0/16 -j ACCEPT
+
+    iptables -A FORWARD -d 10.17.0.0/16 -j ACCEPT
 
 
 #### 2. Why ip rule/route don't work?
