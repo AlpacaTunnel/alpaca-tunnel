@@ -32,8 +32,8 @@ enum {pkt_none, pkt_write, pkt_send} packet_type = pkt_none;
 void thread_clean_callback(void *arg)
 {
     
-    WARNING("Entering thread_clean_callback, which should only happen when process exits.");
-    WARNING("This message means there is a thread exited during process runing.");
+    DEBUG("Entering thread_clean_callback, which should only happen when process exits.");
+    DEBUG("This message means there is a thread exited during process runing.");
     return;
 }
 
@@ -188,7 +188,7 @@ void* pkt_delay_dup(void *arg)
             len = pkt->len;
 
             dst_id = pkt->dst_id;
-            peeraddr = pkt->dst_addr;
+            peeraddr = pkt->outer_dst_addr;
             memcpy(buf_send, pkt->buf_packet, len);
 
             int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
@@ -356,6 +356,7 @@ void* server_read(void *arg)
         pkt->src_id = vpn_ctx->self_id;
         pkt->dst_id = dst_id;
         pkt->is_forward = false;
+        pkt->inner_dst_addr.sin_addr.s_addr = ip_h.daddr;
         pkt->send_fd = vpn_ctx->sockfd;
         pkt->dup = dup;
         pkt->len = len;
@@ -401,7 +402,8 @@ void* server_send(void *arg)
         len = pkt->len;
         bool dup = pkt->dup;
         bool is_forward = pkt->is_forward;
-        struct sockaddr_in src_addr = pkt->src_addr;
+        struct sockaddr_in outer_src_addr = pkt->outer_src_addr;
+        struct sockaddr_in inner_dst_addr = pkt->inner_dst_addr;
         dst_id = pkt->dst_id;
         src_id = pkt->src_id;
         memcpy(buf_send, pkt->buf_packet, len);  // header and ICV are not encryped
@@ -431,10 +433,16 @@ void* server_send(void *arg)
                 if(peeraddr.sin_addr.s_addr == 0)
                     continue;
 
+                if(inner_dst_addr.sin_addr.s_addr == peeraddr.sin_addr.s_addr)
+                {
+                    ERROR(0, "tunif %s read packet that caused routing table loop, check your route!", vpn_ctx->tunif.name);
+                    continue;
+                }
+
                 if(is_forward)
                 {
                     // split horizon
-                    if(peeraddr.sin_addr.s_addr == src_addr.sin_addr.s_addr && peeraddr.sin_port == src_addr.sin_port)
+                    if(peeraddr.sin_addr.s_addr == outer_src_addr.sin_addr.s_addr && peeraddr.sin_port == outer_src_addr.sin_port)
                     {
                         DEBUG("tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
                             vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, dst_id/256, dst_id%256);
@@ -502,7 +510,7 @@ void* server_send(void *arg)
                 if(is_forward)
                 {
                     // split horizon
-                    if(peeraddr.sin_addr.s_addr == src_addr.sin_addr.s_addr && peeraddr.sin_port == src_addr.sin_port)
+                    if(peeraddr.sin_addr.s_addr == outer_src_addr.sin_addr.s_addr && peeraddr.sin_port == outer_src_addr.sin_port)
                     {
                         DEBUG("tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
                             vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, dst_id/256, dst_id%256);
@@ -524,7 +532,7 @@ void* server_send(void *arg)
             pkt->send_fd = sockfd;
             pkt->len = len;
             pkt->dst_id = dst_id;
-            pkt->dst_addr = peer_table[dst_id]->path_array[0].peeraddr;  // only duplicate to first path
+            pkt->outer_dst_addr = peer_table[dst_id]->path_array[0].peeraddr;  // only duplicate to first path
             memcpy(pkt->buf_packet, buf_send, len);
 
             delay_queue_put(vpn_ctx->delay_q, pkt, UDP_DUP_DELAY);
@@ -814,7 +822,7 @@ void* server_recv(void *arg)
             pkt->src_id = src_id;
             pkt->dst_id = dst_id;
             pkt->is_forward = true;
-            pkt->src_addr = peeraddr;
+            pkt->outer_src_addr = peeraddr;
             pkt->send_fd = vpn_ctx->sockfd;
             pkt->len = len_recv;
             pkt->dup = dup;

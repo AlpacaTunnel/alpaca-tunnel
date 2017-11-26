@@ -65,7 +65,7 @@ DESIGN
 
     b3) If dst_id in header does NOT equal the peer's ID, and there are forwarders, then send to the forwarders.
 
-    By applying these rules, we are given the privilege of choosing gateway to the clients.
+    By applying these rules, we are given the privilege of choosing gateway to the clients. And two peers can even do p2p communication via a server.
 
 
 #### 3. Routing Optimization

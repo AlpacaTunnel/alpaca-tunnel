@@ -12,7 +12,7 @@
 
 #define DEFAULT_SEQ_NR 16000   // enough for 100Mbps TCP
 #define TCP_SESSION_CNT 100
-
+#define SECRET_NULL_FLAG "null"
 
 /*
 * replace all white-space characters to spaces, remove all characters after '#'
@@ -274,7 +274,7 @@ int update_peer_table(peer_profile_t** peer_table, FILE *secrets_file)
 
         path_profile_t * first_path = &(tmp_peer->path_array[0]);     // only read the fist path form secret.txt
         first_path->dynamic = true;
-        if(ip_name_str != NULL && strcmp(ip_name_str, "null") != 0)
+        if(ip_name_str != NULL && strcmp(ip_name_str, SECRET_NULL_FLAG) != 0)
         {
             char ip_str[IP_LEN] = "\0";
             if(hostname_to_ip(ip_name_str, ip_str) < 0)
@@ -288,7 +288,7 @@ int update_peer_table(peer_profile_t** peer_table, FILE *secrets_file)
             }
         }
 
-        if(ip6_str != NULL && strcmp(ip6_str, "null") != 0)
+        if(ip6_str != NULL && strcmp(ip6_str, SECRET_NULL_FLAG) != 0)
             WARNING("IPv6 not supported now, ignore it!");
 
         tmp_peer->vip = htonl(id); // 0.0.x.x in network byte order, used inside tunnel.
