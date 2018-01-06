@@ -549,7 +549,8 @@ void* server_send(void *arg)
                 uint peer_last_time = peer_table[dst_id]->last_time;
                 if(abs(peer_last_time - path_last_time) > PATH_LIFE_TIME)
                 {
-                    peer_table[dst_id]->path_array[pi].peeraddr.sin_addr.s_addr = 0;
+                    if(peer_table[dst_id]->path_array[pi].dynamic)
+                        peer_table[dst_id]->path_array[pi].peeraddr.sin_addr.s_addr = 0;
                     continue;
                 }
 
