@@ -30,6 +30,7 @@
 #define MAX_FORWARDER_CNT 3  // pi_a is 2 bits, can hold only 4 forwarders, and pi==0 is reserved, so only 3 forwarders left
 
 #define PATH_LIFE_TIME 10  // if abs(last_time - path_array[i].last_time) > PATH_LIFE_TIME, don't send to this peeraddr
+#define PEER_LIFE_TIME 60  // if abs(now - path_array[i].last_time_local) > PEER_LIFE_TIME, don't send any pkt to peer
 
 #define HEADER_MAGIC 1990
 
@@ -83,8 +84,8 @@ union pi_u
 struct ttl_pi_sd_s
 {
     uint        ttl        : 4;
-    uint        pi_a       : 2;    // path index for sender
-    uint        pi_b       : 2;    // path index for forwarder
+    uint        pi_a       : 2;    // path index set by sender(origin)
+    uint        pi_b       : 2;    // path index set by forwarder
     bool        si         : 1;    // source inside flag
     bool        di         : 1;    // dest inside flag
     uint        reserved   : 6;

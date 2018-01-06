@@ -357,6 +357,7 @@ void* server_read(void *arg)
         pkt->dst_id = dst_id;
         pkt->is_forward = false;
         pkt->inner_dst_addr.sin_addr.s_addr = ip_h.daddr;
+        pkt->inner_src_addr.sin_addr.s_addr = ip_h.saddr;
         pkt->send_fd = vpn_ctx->sockfd;
         pkt->dup = dup;
         pkt->len = len;
@@ -404,6 +405,7 @@ void* server_send(void *arg)
         bool is_forward = pkt->is_forward;
         struct sockaddr_in outer_src_addr = pkt->outer_src_addr;
         struct sockaddr_in inner_dst_addr = pkt->inner_dst_addr;
+        struct sockaddr_in inner_src_addr = pkt->inner_src_addr;
         dst_id = pkt->dst_id;
         src_id = pkt->src_id;
         memcpy(buf_send, pkt->buf_packet, len);  // header and ICV are not encryped
@@ -416,10 +418,45 @@ void* server_send(void *arg)
         header_send.seq_rand.u32 = htonl(header_send.seq_rand.u32);
         bigger_id = dst_id > src_id ? dst_id : src_id;
         buf_psk = peer_table[bigger_id]->psk;
-    
-        // DEBUG("forwarder_nr: %d, dst_id: %d, src_id: %d", vpn_ctx->forwarder_cnt, dst_id, src_id);
+
+        // from server to clients. if first_path is dynamic, dst_id is client
+        if(dst_id > src_id && peer_table[dst_id]->path_array[0].dynamic &&
+                abs(time(NULL) - peer_table[dst_id]->last_time_local) > PEER_LIFE_TIME)
+        {
+            DEBUG("did NOT receive any packets from %d.%d for %d seconds, drop its packets", dst_id/256, dst_id%256, PEER_LIFE_TIME);
+            continue;
+        }
+
+        bool is_pkt_loop = false;
         if(vpn_ctx->forwarder_cnt > 0 && dst_id < src_id)  // send to forwarders
         {
+            // check loop: consider 2 forwarders, forwarded pkt sent into tunnel again
+            for(int i = 0; i < vpn_ctx->forwarder_cnt; i++)
+            {
+                int forwarder_id = vpn_ctx->forwarders[i];
+                peeraddr = peer_table[forwarder_id]->path_array[0].peeraddr;
+                if(peeraddr.sin_addr.s_addr == 0)
+                    continue;
+
+                if(peeraddr.sin_addr.s_addr == inner_dst_addr.sin_addr.s_addr || peeraddr.sin_addr.s_addr == inner_src_addr.sin_addr.s_addr)
+                {
+                    ERROR(0, "tunif %s read packet that caused routing table loop, check your route!", vpn_ctx->tunif.name);
+                    is_pkt_loop = true;
+                    break;
+                }
+
+                if(peeraddr.sin_addr.s_addr == outer_src_addr.sin_addr.s_addr)
+                {
+                    DEBUG("split horizon: tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
+                        vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, dst_id/256, dst_id%256);
+                    is_pkt_loop = true;
+                    break;
+                }
+            }
+
+            if(is_pkt_loop)
+                continue;
+
             for(int i = 0; i < vpn_ctx->forwarder_cnt; i++)
             {
                 int forwarder_id = vpn_ctx->forwarders[i];
@@ -431,23 +468,9 @@ void* server_send(void *arg)
 
                 peeraddr = peer_table[forwarder_id]->path_array[0].peeraddr;  // only forward to first path (got from secret.txt)
                 if(peeraddr.sin_addr.s_addr == 0)
-                    continue;
-
-                if(inner_dst_addr.sin_addr.s_addr == peeraddr.sin_addr.s_addr)
                 {
-                    ERROR(0, "tunif %s read packet that caused routing table loop, check your route!", vpn_ctx->tunif.name);
+                    WARNING("forwarder address not avaliable: %d.%d", forwarder_id/256, forwarder_id%256);
                     continue;
-                }
-
-                if(is_forward)
-                {
-                    // split horizon
-                    if(peeraddr.sin_addr.s_addr == outer_src_addr.sin_addr.s_addr && peeraddr.sin_port == outer_src_addr.sin_port)
-                    {
-                        DEBUG("tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
-                            vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, dst_id/256, dst_id%256);
-                        continue;
-                    }
                 }
 
                 header_send.ttl_pi_sd.u16 = ntohs(header_send.ttl_pi_sd.u16);
@@ -492,8 +515,32 @@ void* server_send(void *arg)
             {
                 peeraddr = peer_table[dst_id]->path_array[pi].peeraddr;
                 if(peeraddr.sin_addr.s_addr == 0)
+                    continue;
+
+                if(peeraddr.sin_addr.s_addr == inner_dst_addr.sin_addr.s_addr || peeraddr.sin_addr.s_addr == inner_src_addr.sin_addr.s_addr)
                 {
-                    // DEBUG("path not avaliable: %d", pi);
+                    ERROR(0, "tunif %s read packet that caused routing table loop, check your route!", vpn_ctx->tunif.name);
+                    is_pkt_loop = true;
+                    break;
+                }
+
+                if(peeraddr.sin_addr.s_addr == outer_src_addr.sin_addr.s_addr)
+                {
+                    DEBUG("split horizon: tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
+                        vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, dst_id/256, dst_id%256);
+                    is_pkt_loop = true;
+                    break;
+                }
+            }
+
+            if(is_pkt_loop)
+                continue;
+
+            for(int pi = 0; pi <= HEAD_MAX_PATH; pi++)
+            {
+                peeraddr = peer_table[dst_id]->path_array[pi].peeraddr;
+                if(peeraddr.sin_addr.s_addr == 0)
+                {
                     continue;
                 }
 
@@ -503,19 +550,7 @@ void* server_send(void *arg)
                 if(abs(peer_last_time - path_last_time) > PATH_LIFE_TIME)
                 {
                     peer_table[dst_id]->path_array[pi].peeraddr.sin_addr.s_addr = 0;
-                    // DEBUG("path timeout: %d, peer: %d, path: %d", pi, peer_last_time, path_last_time);
                     continue;
-                }
-
-                if(is_forward)
-                {
-                    // split horizon
-                    if(peeraddr.sin_addr.s_addr == outer_src_addr.sin_addr.s_addr && peeraddr.sin_port == outer_src_addr.sin_port)
-                    {
-                        DEBUG("tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
-                            vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, dst_id/256, dst_id%256);
-                        continue;
-                    }
                 }
 
                 int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
@@ -532,10 +567,16 @@ void* server_send(void *arg)
             pkt->send_fd = sockfd;
             pkt->len = len;
             pkt->dst_id = dst_id;
-            pkt->outer_dst_addr = peer_table[dst_id]->path_array[0].peeraddr;  // only duplicate to first path
-            memcpy(pkt->buf_packet, buf_send, len);
-
-            delay_queue_put(vpn_ctx->delay_q, pkt, UDP_DUP_DELAY);
+            for(int pi = 0; pi <= HEAD_MAX_PATH; pi++)
+            {
+                if(peer_table[dst_id]->path_array[pi].peeraddr.sin_addr.s_addr != 0)
+                {
+                    pkt->outer_dst_addr = peer_table[dst_id]->path_array[pi].peeraddr;
+                    memcpy(pkt->buf_packet, buf_send, len);
+                    delay_queue_put(vpn_ctx->delay_q, pkt, UDP_DUP_DELAY);
+                    break;  // only duplicate to first available path
+                }
+            }
         }
 
         continue;
@@ -643,9 +684,16 @@ void* server_recv(void *arg)
             continue;
         }
 
-        if(src_id == 0 || src_id == 1 || src_id == vpn_ctx->self_id)
+        if(src_id == 0 || src_id == 1)
         {
             DEBUG("tunif %s received packet from reserved src_id: %d.%d to %d.%d!", 
+                vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
+            continue;
+        }
+
+        if(src_id == vpn_ctx->self_id)
+        {
+            DEBUG("tunif %s received packet from self: %d.%d to %d.%d!", 
                 vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256);
             continue;
         }
@@ -705,6 +753,7 @@ void* server_recv(void *arg)
         }
         peer_table[src_id]->path_array[pi].last_time = pkt_time;
         peer_table[src_id]->last_time = pkt_time;
+        peer_table[src_id]->last_time_local = time(NULL);
 
         peer_table[src_id]->recv_pkt_cnt++;  // include duplicated packets
 

@@ -63,7 +63,7 @@ When a peer reads a packet from the tunnel device:
 
     a2) If the peer specifies some forwarders, then the packet should be sent to these forwarders.
 
-When a peer receives a packet, it should do this way:
+When a peer receives a packet from the UDP socket, it should do this way:
 
     b1) If dst_id in header equals the peer's ID, then write it to the tunnel device. (This step can be optimized, see below #3.)
 
@@ -72,6 +72,10 @@ When a peer receives a packet, it should do this way:
     b3) If dst_id in header does NOT equal the peer's ID, and there are forwarders, then send to the forwarders.
 
 By applying these rules, we are given the privilege of choosing gateway to the clients. And two peers can even do p2p communication via a server.
+
+Because there are forwarders, there are different paths in the header. The first path is always the peer's direct address (no forwarders involved). When load secrets from file, a peer's first path is statically set if it has an address. When a client send a packet to server, it set path index to 0 if no forwarders are specified (or the forwarder is the server).
+
+In the above rules, when a packet is sent to forwarders, it's always sent to the first path. And when a packet is sent directly to a none-forwarder, it's sent to all available paths.
 
 
 #### 3. Routing Optimization

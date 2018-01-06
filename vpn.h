@@ -27,6 +27,7 @@ struct packet_profile
     int                 len;
     bool                dup;
     struct sockaddr_in  inner_dst_addr;  // used to check route table loop
+    struct sockaddr_in  inner_src_addr;  // used to check route table loop
     struct sockaddr_in  outer_dst_addr;  // only used when dup send pkt
     struct sockaddr_in  outer_src_addr;  // if forward == true, this is the recv peeraddr, used to check split horizon
     byte *              buf_packet;

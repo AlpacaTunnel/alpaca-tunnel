@@ -68,6 +68,7 @@ typedef struct
     byte psk[2*AES_TEXT_LEN];
     path_profile_t * path_array;  // an array of all peeraddr, path[0] is always used when forwarder_id == dst_id
     uint last_time; // latest timestamp in peer's header
+    uint32_t last_time_local;   // let's assume most packets are TCP, if for more than say 60 seconds, there are only packets sent to the peer, but no received, then this path shoud be obseleted.
     uint32_t vip;   // virtual client ip
 } peer_profile_t;
 
