@@ -63,7 +63,7 @@ forwarding_table_t * forwarding_table_init(uint32_t size)
 
     table->type = ROUTE_TYPE_IPV4;
     table->size = size;
-    table->counter = 0;
+    table->count = 0;
 
     return table;
 }
@@ -95,7 +95,7 @@ int forwarding_table_clear(forwarding_table_t * table)
     }
 
     bzero(table->array, table->size * sizeof(route_item_t));
-    table->counter = 0;
+    table->count = 0;
 
     if(pthread_mutex_unlock(table->mutex) != 0)
     {
@@ -106,14 +106,15 @@ int forwarding_table_clear(forwarding_table_t * table)
     return 0;
 }
 
+
 static int route_item_compare(void *one, void *two)
 {
     uint64_t one_ip_cat = ((route_item_t *)one)->ip_cat;
     uint64_t two_ip_cat = ((route_item_t *)two)->ip_cat;
     if(one_ip_cat < two_ip_cat)
-        return -1;
-    else if(one_ip_cat > two_ip_cat)
         return 1;
+    else if(one_ip_cat > two_ip_cat)
+        return -1;
     else
         return 0;
 }
@@ -123,6 +124,41 @@ static void route_item_swap(void *x, void *y)
     route_item_t t = *(route_item_t *)x;
     *(route_item_t *)x = *(route_item_t *)y;
     *(route_item_t *)y = t;
+}
+
+
+int forwarding_table_timedout(forwarding_table_t * table)
+{
+    if(table == NULL)
+        return 0;
+
+    if(pthread_mutex_lock(table->mutex) != 0)
+    {
+        ERROR(errno, "pthread_mutex_lock");
+        return -1;
+    }
+
+    uint64_t now = time(NULL);
+    for(int i=0; i < table->size; i++)
+    {
+        if(table->array[i].timestamp != 0 && (now - table->array[i].timestamp > ROUTE_ITEM_TIMEOUT))
+        {
+            if(table->count > 0)
+                table->count--;
+            bzero(&(table->array[i]), sizeof(route_item_t));
+        }
+    }
+
+    // make it's a descending sort, so when put a new item, table->array[able->count] is 0
+    quick_sort(table->array, sizeof(route_item_t), table->size, route_item_compare, route_item_swap);
+
+    if(pthread_mutex_unlock(table->mutex) != 0)
+    {
+        ERROR(errno, "pthread_mutex_unlock");
+        return -1;
+    }
+
+    return 0;
 }
 
 
@@ -151,8 +187,7 @@ uint16_t forwarding_table_get(forwarding_table_t * table, uint32_t ip_dst, uint3
 
     if(index >= 0)
     {
-        table->counter++;
-        table->array[index].counter = table->counter;
+        table->array[index].timestamp = time(NULL);
         gw_id = table->array[index].gw_id;
     }
 
@@ -166,25 +201,6 @@ uint16_t forwarding_table_get(forwarding_table_t * table, uint32_t ip_dst, uint3
 }
 
 
-static uint32_t forwarding_table_get_oldest(forwarding_table_t * table)
-{
-    int min_index = 0;
-    uint64_t min_counter = ~0;
-    for(int i = 0; i < table->size; i++)
-    {
-        if(table->array[i].counter == 0)
-            return i;
-        if(table->array[i].counter < min_counter)
-        {
-            min_index = i;
-            min_counter = table->array[i].counter;
-        }
-    }
-
-    return min_index;
-}
-
-
 int forwarding_table_put(forwarding_table_t * table, uint32_t ip_dst, uint32_t ip_src, uint16_t gw_id)
 {
     if(pthread_mutex_lock(table->mutex) != 0)
@@ -193,24 +209,33 @@ int forwarding_table_put(forwarding_table_t * table, uint32_t ip_dst, uint32_t i
         return -1;
     }
 
-    table->counter++;
-    route_item_t item;
-    item.counter = table->counter;
-    item.gw_id = gw_id;
-    item.ip_dst = ip_dst;
-    item.ip_src = ip_src;
-    item.ip_cat = ip_dst;
-    item.ip_cat = (item.ip_cat << 32) + ip_src;
+    table->count++;
+    if(table->count < table->size)
+    {
+        route_item_t item;
+        item.timestamp = time(NULL);
+        item.gw_id = gw_id;
+        item.ip_dst = ip_dst;
+        item.ip_src = ip_src;
+        item.ip_cat = ip_dst;
+        item.ip_cat = (item.ip_cat << 32) + ip_src;
 
-    uint32_t index = forwarding_table_get_oldest(table);
-    table->array[index] = item;
+        table->array[table->count] = item;
 
-    quick_sort(table->array, sizeof(route_item_t), table->size, route_item_compare, route_item_swap);
+        // make it's a descending sort, so when put a new item, table->array[able->count] is 0
+        quick_sort(table->array, sizeof(route_item_t), table->size, route_item_compare, route_item_swap);
+    }
 
     if(pthread_mutex_unlock(table->mutex) != 0)
     {
         ERROR(errno, "pthread_mutex_unlock");
         return -1;
+    }
+
+    if(table->count > table->size)
+    {
+        WARNING("forwarding table is full, clear timeouted item.");
+        forwarding_table_timedout(table);
     }
 
     return 0;

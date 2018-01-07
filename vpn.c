@@ -132,6 +132,9 @@ uint16_t get_dst_id(forwarding_table_t * forwarding_table, uint32_t ip_dst, uint
     if((ip_dst & local_mask) == (local_addr & local_mask))
         return (uint16_t)ntohl(ip_dst);
 
+    // return here if don't want forwarding_table cache
+    // return (uint16_t)ntohl(get_sys_iproute(ip_dst, ip_src, if_list));
+
     uint16_t gw_id = forwarding_table_get(forwarding_table, ip_dst, ip_src);
     if(0 == gw_id)
     {
@@ -143,6 +146,7 @@ uint16_t get_dst_id(forwarding_table_t * forwarding_table, uint32_t ip_dst, uint
         {
             gw_id = (uint16_t)ntohl(gw_ip);
             forwarding_table_put(forwarding_table, ip_dst, ip_src, gw_id);
+            // DEBUG("new route item added");
         }
     }
     return gw_id;

@@ -49,7 +49,7 @@ monitor.c
 
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "5.1.3"
+#define VERSION         "5.1.4"
 
 #define ALLOW_P2P true
 // #define CHECK_RESTRICTED_IP true
@@ -62,6 +62,7 @@ void reset_link_route(void * arg);
 void update_secret(void * arg);
 
 void reset_peer_status_all(void *arg);
+void clear_forwarding_table_timedout(void *arg);
 
 
 int main(int argc, char *argv[])
@@ -129,7 +130,8 @@ int main(int argc, char *argv[])
     int chnroute_table = 0;
     monitor_t * route_monitor = NULL;
     monitor_t * secret_monitor = NULL;
-    monitor_t * cronjob = NULL;
+    monitor_t * cronjob_reset_peer_status = NULL;
+    monitor_t * cronjob_clear_forwarding_table = NULL;
 
 
     /******************* load json config *******************/
@@ -480,7 +482,8 @@ int main(int argc, char *argv[])
 
     route_monitor = monitor_route_start(MONITOR_TYPE_ROUTE_IPV4, 1, reset_link_route, vpn_ctx);
     secret_monitor = monitor_file_start(vpn_ctx->secrets_path, 1, update_secret, vpn_ctx);
-    cronjob = cronjob_start(RESET_STAT_INTERVAL, reset_peer_status_all, vpn_ctx->peer_table);
+    cronjob_reset_peer_status = cronjob_start(RESET_STAT_INTERVAL, reset_peer_status_all, vpn_ctx->peer_table);
+    cronjob_clear_forwarding_table = cronjob_start(FORWARDING_TABLE_CLEAR_INTERVAL, clear_forwarding_table_timedout, vpn_ctx->forwarding_table);
 
     pthread_t tid1=0, tid2=0, tid3=0, tid4=0, tid11=0;
 
@@ -550,8 +553,10 @@ _END:
         monitor_route_stop(route_monitor);
     if(secret_monitor)
         monitor_file_stop(secret_monitor);
-    if(cronjob)
-        cronjob_stop(cronjob);
+    if(cronjob_reset_peer_status)
+        cronjob_stop(cronjob_reset_peer_status);
+    if(cronjob_clear_forwarding_table)
+        cronjob_stop(cronjob_clear_forwarding_table);
 
     if(vpn_ctx->mode == VPN_MODE_CLIENT)
     {
@@ -694,4 +699,11 @@ void reset_peer_status_all(void *arg)
     return;
 }
 
+void clear_forwarding_table_timedout(void *arg)
+{
+    forwarding_table_t * forwarding_table = (forwarding_table_t *)arg;
+    forwarding_table_timedout(forwarding_table);
+    DEBUG("clear_forwarding_table_timedout called");
 
+    return;
+}

@@ -1,11 +1,6 @@
 /*
  * The forwarding_table should use a data struct that fits for a lot of searching, so I choose sorted array here.
 
- * When inserting new route item, the oldest should be deleted. How to find the oldest?
- * Let's use a counter, for each search the total counter increases by 1, then the one with the smallest counter is the oldest one.
- * The counter is actually timestamp, though it does not increase every second.
- * At SEQ_LEVEL_1-speed (16000pbs), a uint64_t counter is enough and won't overflow forever.
-
  * caller should watch if ip route/rule has changed.
  * on receiving RTMGRP_NOTIFY, these two tables must be reset.
 
@@ -34,6 +29,8 @@
 #include <net/if.h>
 #include <linux/rtnetlink.h>
 
+#define ROUTE_ITEM_TIMEOUT 3600
+#define FORWARDING_TABLE_CLEAR_INTERVAL 86400
 
 typedef struct
 {
@@ -41,15 +38,15 @@ typedef struct
     uint32_t ip_dst;
     uint32_t ip_src;
     uint64_t ip_cat;   // concatenate ip_dst and ip_src, ip_cat = ip_dst << 32 + ip_src
-    uint64_t counter;  // the latest counter of current route item
+    uint64_t timestamp;  // the last time when the route item is queried
 } route_item_t;
 
 
 typedef struct
 {
-    int type;
-    uint32_t size;
-    uint64_t counter;  // the latest counter of all route items
+    int type;           // ipv4 or ipv6
+    uint32_t size;      // total size
+    uint32_t count;     // current number of route items
     route_item_t * array;
     pthread_mutex_t * mutex;
 } forwarding_table_t;
@@ -61,7 +58,7 @@ struct if_info
     int index;
     uint32_t addr;
     uint32_t mask;
-    uint32_t ptp; //P_t_P, Point-to-Point peer addr.
+    uint32_t ptp; // P_t_P, Point-to-Point peer addr.
     char name[IFNAMSIZ];
 };
 typedef struct if_info if_info_t;
@@ -78,6 +75,7 @@ typedef struct
 forwarding_table_t * forwarding_table_init(uint32_t size);
 int forwarding_table_destroy(forwarding_table_t * table);
 int forwarding_table_clear(forwarding_table_t * table);
+int forwarding_table_timedout(forwarding_table_t * table);
 uint16_t forwarding_table_get(forwarding_table_t * table, uint32_t ip_dst, uint32_t ip_src);
 int forwarding_table_put(forwarding_table_t * table, uint32_t ip_dst, uint32_t ip_src, uint16_t gw_id);
 
