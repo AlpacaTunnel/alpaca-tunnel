@@ -81,7 +81,7 @@ refer to <https://github.com/zserge/jsmn>.
 Bugs and Issues
 ---------------
 
-1. When a client switches the gateway between forwarders, or access more than one forwarders at the same time, it will trigger split horizon. During this time, packets will not be forwarded among the forwarders, and only the direct packets are delivered. So it may slow down the speed.
+1. When a client switches the gateway between forwarders, or access more than one forwarders at the same time, it will trigger split horizon. During this time, packets will not be forwarded among the forwarders, and only the direct packets are delivered. So it may slow down the speed. (For each trigger, the log will last for about 10 seconds.)
 
 2. When forwarders set on a server, two clients may not be able to reach each other via the server. If you want to use P2P, don't specify forwarders on the server.
 
