@@ -403,6 +403,7 @@ void* server_send(void *arg)
         len = pkt->len;
         bool dup = pkt->dup;
         bool is_forward = pkt->is_forward;
+        // in not set explicitly, the values of outer_src_addr/inner_dst_addr/inner_src_addr is 0
         struct sockaddr_in outer_src_addr = pkt->outer_src_addr;
         struct sockaddr_in inner_dst_addr = pkt->inner_dst_addr;
         struct sockaddr_in inner_src_addr = pkt->inner_src_addr;
@@ -444,14 +445,6 @@ void* server_send(void *arg)
                     is_pkt_loop = true;
                     break;
                 }
-
-                if(peeraddr.sin_addr.s_addr == outer_src_addr.sin_addr.s_addr)
-                {
-                    DEBUG("split horizon: tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
-                        vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, dst_id/256, dst_id%256);
-                    is_pkt_loop = true;
-                    break;
-                }
             }
 
             if(is_pkt_loop)
@@ -470,6 +463,14 @@ void* server_send(void *arg)
                 if(peeraddr.sin_addr.s_addr == 0)
                 {
                     WARNING("forwarder address not avaliable: %d.%d", forwarder_id/256, forwarder_id%256);
+                    continue;
+                }
+
+                // check for each forwarder, allow a client access two forwarders at the same time, also allow loop among 3 forwarders (until TTL expire)
+                if(peeraddr.sin_addr.s_addr == outer_src_addr.sin_addr.s_addr)
+                {
+                    DEBUG("split horizon: tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
+                        vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, dst_id/256, dst_id%256);
                     continue;
                 }
 
@@ -523,14 +524,6 @@ void* server_send(void *arg)
                     is_pkt_loop = true;
                     break;
                 }
-
-                if(peeraddr.sin_addr.s_addr == outer_src_addr.sin_addr.s_addr)
-                {
-                    DEBUG("split horizon: tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
-                        vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, dst_id/256, dst_id%256);
-                    is_pkt_loop = true;
-                    break;
-                }
             }
 
             if(is_pkt_loop)
@@ -540,7 +533,12 @@ void* server_send(void *arg)
             {
                 peeraddr = peer_table[dst_id]->path_array[pi].peeraddr;
                 if(peeraddr.sin_addr.s_addr == 0)
+                    continue;
+
+                if(peeraddr.sin_addr.s_addr == outer_src_addr.sin_addr.s_addr)
                 {
+                    DEBUG("split horizon: tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
+                        vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, dst_id/256, dst_id%256);
                     continue;
                 }
 
@@ -709,7 +707,6 @@ void* server_recv(void *arg)
         path_profile_t * first_path = &(peer_table[src_id]->path_array[0]);
 
         // check if the first path source addr match the IP:Port in secret.txt
-        // DEBUG("pi: %d", pi);
         if(pi == 0 && first_path->dynamic == false && dst_id < src_id)
         {
             if(first_path->peeraddr.sin_addr.s_addr != peeraddr.sin_addr.s_addr || first_path->peeraddr.sin_port != peeraddr.sin_port)
@@ -743,15 +740,9 @@ void* server_recv(void *arg)
         uint32_t pkt_time = header_recv.time_magic.bit.time;
         uint32_t pkt_seq = header_recv.seq_rand.bit.seq;
 
-        if(pi == 0 && first_path->dynamic == false)
-        {
-            ;  // got first path from the secret.txt, don't store the addr dynamically
-        }
-        else
-        {
+        // got first path from the secret.txt, don't store the addr dynamically
+        if(peer_table[src_id]->path_array[pi].dynamic)
             peer_table[src_id]->path_array[pi].peeraddr = peeraddr;
-            peer_table[src_id]->path_array[pi].dynamic = true;
-        }
         peer_table[src_id]->path_array[pi].last_time = pkt_time;
         peer_table[src_id]->last_time = pkt_time;
         peer_table[src_id]->last_time_local = time(NULL);

@@ -272,8 +272,10 @@ int update_peer_table(peer_profile_t** peer_table, FILE *secrets_file)
                 WARNING("Invalid PORT of peer: %s, ingore it's port value!", id_str);
         }
 
+        for(int i = 0; i <= HEAD_MAX_PATH; i++)
+            tmp_peer->path_array[i].dynamic = true; // set all path to dynamic by default
+
         path_profile_t * first_path = &(tmp_peer->path_array[0]);     // only read the fist path form secret.txt
-        first_path->dynamic = true;
         if(ip_name_str != NULL && strcmp(ip_name_str, SECRET_NULL_FLAG) != 0)
         {
             char ip_str[IP_LEN] = "\0";
@@ -305,8 +307,10 @@ int update_peer_table(peer_profile_t** peer_table, FILE *secrets_file)
             memcpy(peer_table[id]->psk, tmp_peer->psk, 2*AES_TEXT_LEN);
 
             for(int i = 0; i <= HEAD_MAX_PATH; i++)
-                if(tmp_peer->path_array[i].dynamic == false) // static address from secret.txt
-                    peer_table[id]->path_array[i].peeraddr = tmp_peer->path_array[i].peeraddr;
+            {
+                peer_table[id]->path_array[i].peeraddr = tmp_peer->path_array[i].peeraddr;
+                peer_table[id]->path_array[i].dynamic  = tmp_peer->path_array[i].dynamic;
+            }
 
             delete_peer(tmp_peer);
             tmp_peer = NULL;
