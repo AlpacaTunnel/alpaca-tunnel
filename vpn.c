@@ -535,13 +535,6 @@ void* server_send(void *arg)
                 if(peeraddr.sin_addr.s_addr == 0)
                     continue;
 
-                if(peeraddr.sin_addr.s_addr == outer_src_addr.sin_addr.s_addr)
-                {
-                    DEBUG("split horizon: tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
-                        vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, dst_id/256, dst_id%256);
-                    continue;
-                }
-
                 // at the very beginning, both last_time are 0
                 uint path_last_time = peer_table[dst_id]->path_array[pi].last_time;
                 uint peer_last_time = peer_table[dst_id]->last_time;
@@ -549,6 +542,13 @@ void* server_send(void *arg)
                 {
                     if(peer_table[dst_id]->path_array[pi].dynamic)
                         peer_table[dst_id]->path_array[pi].peeraddr.sin_addr.s_addr = 0;
+                    continue;
+                }
+
+                if(peeraddr.sin_addr.s_addr == outer_src_addr.sin_addr.s_addr)
+                {
+                    DEBUG("split horizon: tunif %s recv packet from %d.%d to %d.%d: next peer is %d.%d, dst addr equals src addr!", 
+                        vpn_ctx->tunif.name, src_id/256, src_id%256, dst_id/256, dst_id%256, dst_id/256, dst_id%256);
                     continue;
                 }
 
