@@ -49,7 +49,7 @@ monitor.c
 
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "5.1.4"
+#define VERSION         "5.1.5"
 
 #define ALLOW_P2P true
 // #define CHECK_RESTRICTED_IP true

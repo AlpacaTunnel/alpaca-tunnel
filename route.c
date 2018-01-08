@@ -52,7 +52,7 @@ forwarding_table_t * forwarding_table_init(uint32_t size)
         return NULL;
     }
 
-    table->array = (route_item_t *)malloc((size+1) * sizeof(route_item_t));
+    table->array = (route_item_t *)malloc((size+10) * sizeof(route_item_t));
     if(table->array == NULL)
     {
         ERROR(errno, "malloc failed");
@@ -209,7 +209,6 @@ int forwarding_table_put(forwarding_table_t * table, uint32_t ip_dst, uint32_t i
         return -1;
     }
 
-    table->count++;
     if(table->count < table->size)
     {
         route_item_t item;
@@ -220,11 +219,22 @@ int forwarding_table_put(forwarding_table_t * table, uint32_t ip_dst, uint32_t i
         item.ip_cat = ip_dst;
         item.ip_cat = (item.ip_cat << 32) + ip_src;
 
-        table->array[table->count] = item;
+        uint32_t seat = 0;
+        for(int i = table->count; i > 0; i--)
+        {
+            if(item.ip_cat < table->array[i-1].ip_cat)
+            {
+                seat = i;
+                break;
+            }
+            else
+                table->array[i] = table->array[i-1];
+        }
 
-        // make it's a descending sort, so when put a new item, table->array[able->count] is 0
-        quick_sort(table->array, sizeof(route_item_t), table->size, route_item_compare, route_item_swap);
+        table->array[seat] = item;
     }
+
+    table->count++;
 
     if(pthread_mutex_unlock(table->mutex) != 0)
     {

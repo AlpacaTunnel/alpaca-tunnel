@@ -85,5 +85,3 @@ Bugs and Issues
 
 2. When forwarders set on a server, two clients may not be able to reach each other via the server. If you want to use P2P, don't specify forwarders on the server.
 
-3. When there are a lot of traffic to different IPs, the CPU usage may be high since for each dst IP, there is a system routing query (so there are a lot of system calls). But the queries will be cached in memory, so after all queries are done, the CPU usage will drop to normal. This may last for minutes for example if you are using P2P downloading. (at about 10 queries per second, 2000 peers will cost 3 minutes.)
-
