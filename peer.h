@@ -65,7 +65,8 @@ typedef struct
     tcp_info_t * tcp_info;  // not used yet
     flow_profile_t * flow_src;
     pthread_mutex_t * flow_lock;  // acquire the lock before set the flow_src
-    byte psk[2*AES_TEXT_LEN];
+    byte psk[2*AES_BLOCKLEN];
+    struct AES_ctx * aes_ctx;
     path_profile_t * path_array;  // an array of all peeraddr, path[0] is always used when forwarder_id == dst_id
     uint last_time; // latest timestamp in peer's header
     uint32_t last_time_local;   // let's assume most packets are TCP, if for more than say 60 seconds, there are only packets sent to the peer, but no received, then this path shoud be obseleted.

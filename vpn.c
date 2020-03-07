@@ -105,6 +105,8 @@ vpn_context_t * vpn_context_init()
 
     vpn_ctx->forwarders = (uint16_t *)malloc((MAX_FORWARDER_CNT+1) * sizeof(uint16_t));
 
+    vpn_ctx->group_aes_ctx = (struct AES_ctx *)malloc(sizeof(struct AES_ctx));
+
     return vpn_ctx;
 }
 
@@ -220,7 +222,8 @@ void* server_read(void *arg)
     uint16_t len_load, nr_aes_block;
     byte * buf_load = (byte *)malloc(TUN_MTU_MAX);
     byte * buf_send = (byte *)malloc(ETH_MTU);
-    byte * buf_psk;
+    // byte * buf_psk;
+    struct AES_ctx * aes_ctx;
     bzero(buf_load, TUN_MTU_MAX);
 
     while(vpn_ctx->running)
@@ -234,9 +237,16 @@ void* server_read(void *arg)
 
         memcpy(&ip_h, buf_load, sizeof(struct iphdr));
 
-        if(ip_h.version != 4)
+        if(ip_h.version != 4 || ip_h.version != 6)
         {
-            DEBUG("read not supported IP version: %d", ip_h.version);
+            ERROR(0, "read not supported IP version: %d. tunnel deleted?", ip_h.version);
+            sleep(10);  // if tunif is deleted, will cause infinite loop here. so sleep to reduce CPU load.
+            continue;
+        }
+
+        if(ip_h.version == 6)
+        {
+            DEBUG("not supported IPv6");
             continue;
         }
 
@@ -296,7 +306,8 @@ void* server_read(void *arg)
             continue;
         }
 
-        buf_psk = peer_table[bigger_id]->psk;
+        // buf_psk = peer_table[bigger_id]->psk;
+        aes_ctx = peer_table[bigger_id]->aes_ctx;
 
         header_send.dst_id = htons(dst_id);
         header_send.src_id = htons(src_id);
@@ -347,13 +358,16 @@ void* server_read(void *arg)
 
         memcpy(buf_send, &header_send, HEADER_LEN);
 
-        nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
+        nr_aes_block = (len_load + AES_BLOCKLEN - 1) / AES_BLOCKLEN;
         int i;
         for(i=0; i<nr_aes_block; i++)
-            encrypt(buf_send+HEADER_LEN+HEAD_ICV_LEN+i*AES_TEXT_LEN, buf_load+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
+        {
+            AES_ECB_encrypt(aes_ctx, buf_load+i*AES_BLOCKLEN);
+            memcpy(buf_send+HEADER_LEN+HEAD_ICV_LEN+i*AES_BLOCKLEN, buf_load+i*AES_BLOCKLEN, AES_BLOCKLEN);
+        }
 
         bool dup = should_pkt_dup(buf_load);
-        int len = HEADER_LEN + HEAD_ICV_LEN + nr_aes_block*AES_TEXT_LEN;
+        int len = HEADER_LEN + HEAD_ICV_LEN + nr_aes_block*AES_BLOCKLEN;
 
         packet_profile_t * pkt = new_pkt();
 
@@ -393,7 +407,8 @@ void* server_send(void *arg)
     tunnel_header_t header_send;
     for(int i=0; i<ETH_MTU; i++)   //set random padding data
         buf_send[i] = random();
-    byte * buf_psk;
+    // byte * buf_psk;
+    struct AES_ctx * aes_ctx;
     int sockfd = 0;
     int len = 0;
     uint16_t dst_id = 0, src_id = 0, bigger_id = 0;
@@ -422,7 +437,8 @@ void* server_send(void *arg)
         header_send.seq_rand.bit.rand = random();
         header_send.seq_rand.u32 = htonl(header_send.seq_rand.u32);
         bigger_id = dst_id > src_id ? dst_id : src_id;
-        buf_psk = peer_table[bigger_id]->psk;
+        // buf_psk = peer_table[bigger_id]->psk;
+        aes_ctx = peer_table[bigger_id]->aes_ctx;
 
         // from server to clients. if first_path is dynamic, dst_id is client
         if(dst_id > src_id && peer_table[dst_id]->path_array[0].dynamic &&
@@ -502,8 +518,12 @@ void* server_send(void *arg)
                 header_send.ttl_pi_sd.u16 = htons(header_send.ttl_pi_sd.u16);
 
                 memcpy(buf_header, &header_send, HEADER_LEN);
-                encrypt(buf_send, buf_header, vpn_ctx->buf_group_psk, AES_KEY_LEN);  // encrypt header with group PSK
-                encrypt(buf_send+HEADER_LEN, buf_header, buf_psk, AES_KEY_LEN);  // encrypt header to generate icv
+
+                memcpy(buf_send, buf_header, AES_BLOCKLEN);
+                AES_ECB_encrypt(vpn_ctx->group_aes_ctx, buf_send);  // encrypt header with group PSK
+
+                memcpy(buf_send+HEADER_LEN, buf_header, AES_BLOCKLEN);
+                AES_ECB_encrypt(aes_ctx, buf_send+HEADER_LEN);  // encrypt header to generate icv
 
                 int len_pad = (len > ETH_MTU/3) ? 0 : (ETH_MTU/6 + (random() & ETH_MTU/3) );
                 if(sendto(sockfd, buf_send, len + len_pad, 0, (struct sockaddr *)&peeraddr, sizeof(peeraddr)) < 0 )
@@ -513,8 +533,12 @@ void* server_send(void *arg)
         else  // send directly to peer, don't change path index
         {
             memcpy(buf_header, &header_send, HEADER_LEN);
-            encrypt(buf_send, buf_header, vpn_ctx->buf_group_psk, AES_KEY_LEN);  // encrypt header with group PSK
-            encrypt(buf_send+HEADER_LEN, buf_header, buf_psk, AES_KEY_LEN);  // encrypt header to generate icv
+
+            memcpy(buf_send, buf_header, AES_BLOCKLEN);
+            AES_ECB_encrypt(vpn_ctx->group_aes_ctx, buf_send);  // encrypt header with group PSK
+
+            memcpy(buf_send+HEADER_LEN, buf_header, AES_BLOCKLEN);
+            AES_ECB_encrypt(aes_ctx, buf_send+HEADER_LEN);  // encrypt header to generate icv
 
             for(int pi = 0; pi <= HEAD_MAX_PATH; pi++)
             {
@@ -636,7 +660,8 @@ void* server_recv(void *arg)
     socklen_t peeraddr_len = sizeof(peeraddr);
     ip_dot_decimal_t ip_daddr, ip_saddr;
     uint16_t len_load, len_recv, nr_aes_block;
-    byte * buf_psk;
+    // byte * buf_psk;
+    struct AES_ctx * aes_ctx;
     byte * buf_recv = (byte *)malloc(ETH_MTU);
     byte * buf_load = (byte *)malloc(TUN_MTU_MAX);
     byte * buf_send = (byte *)malloc(ETH_MTU);
@@ -655,7 +680,9 @@ void* server_recv(void *arg)
             continue;
         }
 
-        decrypt(buf_header, buf_recv, vpn_ctx->buf_group_psk, AES_KEY_LEN);  //decrypt header with group PSK
+        memcpy(buf_header, buf_recv, AES_BLOCKLEN);
+        AES_ECB_decrypt(vpn_ctx->group_aes_ctx, buf_header);  //decrypt header with group PSK
+
         memcpy(&header_recv, buf_header, HEADER_LEN);
         memcpy(&header_send, buf_header, HEADER_LEN);
 
@@ -721,9 +748,12 @@ void* server_recv(void *arg)
             }
         }
 
-        buf_psk = peer_table[bigger_id]->psk;
+        // buf_psk = peer_table[bigger_id]->psk;
+        aes_ctx = peer_table[bigger_id]->aes_ctx;
 
-        encrypt(buf_icv, buf_header, buf_psk, AES_KEY_LEN);  //encrypt header to generate icv
+        memcpy(buf_icv, buf_header, AES_BLOCKLEN);
+        AES_ECB_encrypt(aes_ctx, buf_icv);  //encrypt header to generate icv
+
         if(strncmp((char*)buf_icv, (char*)(buf_recv+HEADER_LEN), HEAD_ICV_LEN) != 0)
         {
             DEBUG("tunif %s received packet from %d.%d to %d.%d: icv doesn't match!", 
@@ -799,9 +829,12 @@ void* server_recv(void *arg)
         if(vpn_ctx->self_id == dst_id) // write to local tunif
         {
             len_load = header_recv.type_len_m.bit.len;
-            nr_aes_block = (len_load + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
+            nr_aes_block = (len_load + AES_BLOCKLEN - 1) / AES_BLOCKLEN;
             for(int i=0; i<nr_aes_block; i++)
-                decrypt(buf_load+i*AES_TEXT_LEN, buf_recv+HEADER_LEN+HEAD_ICV_LEN+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
+            {
+                memcpy(buf_load+i*AES_BLOCKLEN, buf_recv+HEADER_LEN+HEAD_ICV_LEN+i*AES_BLOCKLEN, AES_BLOCKLEN);
+                AES_ECB_decrypt(aes_ctx, buf_load+i*AES_BLOCKLEN);
+            }
 
             uint32_t daddr, saddr; // network byte order
             if(header_recv.ttl_pi_sd.bit.si == true)
@@ -857,9 +890,12 @@ void* server_recv(void *arg)
             memcpy(buf_recv, &header_send, HEADER_LEN);
 
             // decrypt the IP header to check if it should be duplicated.
-            nr_aes_block = (IP_LEN + AES_TEXT_LEN - 1) / AES_TEXT_LEN;
+            nr_aes_block = (IP_LEN + AES_BLOCKLEN - 1) / AES_BLOCKLEN;
             for(int i=0; i<nr_aes_block; i++)
-                decrypt(buf_load+i*AES_TEXT_LEN, buf_recv+HEADER_LEN+HEAD_ICV_LEN+i*AES_TEXT_LEN, buf_psk, AES_KEY_LEN);
+            {
+                memcpy(buf_load+i*AES_BLOCKLEN, buf_recv+HEADER_LEN+HEAD_ICV_LEN+i*AES_BLOCKLEN, AES_BLOCKLEN);
+                AES_ECB_decrypt(aes_ctx, buf_load+i*AES_BLOCKLEN);
+            }
             bool dup = should_pkt_dup(buf_load);
 
             packet_profile_t * pkt = new_pkt();

@@ -53,6 +53,7 @@ struct vpn_context
     queue_t *               write_q;
     delay_queue_t *         delay_q;
     byte *                  buf_group_psk;
+    struct AES_ctx *        group_aes_ctx;
     int                     forwarder_cnt;
     uint16_t *              forwarders;
     forwarding_table_t *    forwarding_table;

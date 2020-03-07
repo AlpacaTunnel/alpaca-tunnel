@@ -49,7 +49,7 @@ monitor.c
 
 
 #define PROCESS_NAME    "alpaca-tunnel"
-#define VERSION         "5.1.5"
+#define VERSION         "6.0"
 
 #define ALLOW_P2P true
 // #define CHECK_RESTRICTED_IP true
@@ -196,7 +196,9 @@ int main(int argc, char *argv[])
     else if(str_equal(config.mode, "server"))
         vpn_ctx->mode = VPN_MODE_SERVER;
 
-    strncpy((char*)vpn_ctx->buf_group_psk, config.group, 2*AES_TEXT_LEN);
+    strncpy((char*)vpn_ctx->buf_group_psk, config.group, 2*AES_BLOCKLEN);
+    AES_init_ctx(vpn_ctx->group_aes_ctx, vpn_ctx->buf_group_psk);
+
     vpn_ctx->self_id = inet_ptons(config.id);
     
     // wait default route to come up

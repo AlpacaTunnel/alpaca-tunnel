@@ -7,6 +7,10 @@ Todo list:
 6. IPv6
 
 
+6.0 2020-03-07
+- replace AES lib with https://github.com/kokke/tiny-AES-c
+
+
 5.1.5 2018-01-08
 - further optimize forwarding table
 

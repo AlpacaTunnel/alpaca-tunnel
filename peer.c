@@ -134,6 +134,13 @@ static peer_profile_t* create_peer()
     p->recv_pkt_cnt = 0;
     p->send_pkt_cnt = 0;
 
+    p->aes_ctx = (struct AES_ctx *)malloc(sizeof(struct AES_ctx));
+    if(p->aes_ctx == NULL)
+    {
+        ERROR(errno, "aes_ctx: malloc");
+        return NULL;
+    }
+
     return p;
 }
 
@@ -260,9 +267,9 @@ int update_peer_table(peer_profile_t** peer_table, FILE *secrets_file)
 
         tmp_peer->id = id;
 
-        if(strlen(psk_str) > 2*AES_TEXT_LEN)
-            WARNING("PSK of ID %s is longer than %d, ignore some bytes.", id_str, 2*AES_TEXT_LEN);
-        strncpy((char*)tmp_peer->psk, psk_str, 2*AES_TEXT_LEN);
+        if(strlen(psk_str) > 2*AES_BLOCKLEN)
+            WARNING("PSK of ID %s is longer than %d, ignore some bytes.", id_str, 2*AES_BLOCKLEN);
+        strncpy((char*)tmp_peer->psk, psk_str, 2*AES_BLOCKLEN);
 
         int port = 0;
         if(port_str != NULL) // port_str must be parsed before ip, because servaddr.sin_port uses it.
@@ -304,7 +311,7 @@ int update_peer_table(peer_profile_t** peer_table, FILE *secrets_file)
         {
             INFO("update the ID of %s.", id_str);
 
-            memcpy(peer_table[id]->psk, tmp_peer->psk, 2*AES_TEXT_LEN);
+            memcpy(peer_table[id]->psk, tmp_peer->psk, 2*AES_BLOCKLEN);
 
             for(int i = 0; i <= HEAD_MAX_PATH; i++)
             {
@@ -315,6 +322,8 @@ int update_peer_table(peer_profile_t** peer_table, FILE *secrets_file)
             delete_peer(tmp_peer);
             tmp_peer = NULL;
         }
+
+        AES_init_ctx(peer_table[id]->aes_ctx, peer_table[id]->psk);
 
         peer_table[id]->discard = false;  // found the ID in secret.txt, set it to not discard
     }
