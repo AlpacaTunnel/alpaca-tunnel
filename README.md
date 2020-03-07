@@ -58,7 +58,7 @@ You can find all the documentation in the wiki.md.
 License
 -------
 
-Copyright (C) 2017 alpaca-tunnel
+Copyright (C) 2020 alpaca-tunnel
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -76,6 +76,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 The json parser was distributed under MIT license, please
 refer to <https://github.com/zserge/jsmn>.
+
+The AES lib was copied from <https://github.com/kokke/tiny-AES-c>.
 
 
 Bugs and Issues

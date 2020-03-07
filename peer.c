@@ -134,10 +134,17 @@ static peer_profile_t* create_peer()
     p->recv_pkt_cnt = 0;
     p->send_pkt_cnt = 0;
 
-    p->aes_ctx = (struct AES_ctx *)malloc(sizeof(struct AES_ctx));
-    if(p->aes_ctx == NULL)
+    p->aes_ctx_tx = (struct AES_ctx *)malloc(sizeof(struct AES_ctx));
+    if(p->aes_ctx_tx == NULL)
     {
-        ERROR(errno, "aes_ctx: malloc");
+        ERROR(errno, "aes_ctx_tx: malloc");
+        return NULL;
+    }
+
+    p->aes_ctx_rx = (struct AES_ctx *)malloc(sizeof(struct AES_ctx));
+    if(p->aes_ctx_rx == NULL)
+    {
+        ERROR(errno, "aes_ctx_rx: malloc");
         return NULL;
     }
 
@@ -323,7 +330,8 @@ int update_peer_table(peer_profile_t** peer_table, FILE *secrets_file)
             tmp_peer = NULL;
         }
 
-        AES_init_ctx(peer_table[id]->aes_ctx, peer_table[id]->psk);
+        AES_init_ctx(peer_table[id]->aes_ctx_tx, peer_table[id]->psk);
+        AES_init_ctx(peer_table[id]->aes_ctx_rx, peer_table[id]->psk);
 
         peer_table[id]->discard = false;  // found the ID in secret.txt, set it to not discard
     }

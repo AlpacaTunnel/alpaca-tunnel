@@ -210,6 +210,28 @@ void* pkt_delay_dup(void *arg)
     return NULL;
 }
 
+/*
+void print_header(tunnel_header_t *header)
+{
+    printf("type_len_m: %d\n", header->type_len_m);
+    printf("ttl_pi_sd: %d\n", header->ttl_pi_sd);
+    printf("src_id: %d\n", header->src_id);
+    printf("dst_id: %d\n", header->dst_id);
+    printf("time_magic: %d\n", header->time_magic);
+    printf("seq_rand: %d\n", header->seq_rand);
+}
+*/
+
+void reset_aes_iv(tunnel_header_t * iv, const tunnel_header_t * header)
+{
+    memcpy(iv, header, sizeof(tunnel_header_t));
+
+    // only this will change during forwarding
+    iv->ttl_pi_sd.u16 = 0;
+
+    return;
+}
+
 
 void* server_read(void *arg)
 {
@@ -222,8 +244,8 @@ void* server_read(void *arg)
     uint16_t len_load, nr_aes_block;
     byte * buf_load = (byte *)malloc(TUN_MTU_MAX);
     byte * buf_send = (byte *)malloc(ETH_MTU);
-    // byte * buf_psk;
     struct AES_ctx * aes_ctx;
+    tunnel_header_t header_iv;  // use part of the header as AES IV
     bzero(buf_load, TUN_MTU_MAX);
 
     while(vpn_ctx->running)
@@ -237,7 +259,7 @@ void* server_read(void *arg)
 
         memcpy(&ip_h, buf_load, sizeof(struct iphdr));
 
-        if(ip_h.version != 4 || ip_h.version != 6)
+        if(ip_h.version != 4 && ip_h.version != 6)
         {
             ERROR(0, "read not supported IP version: %d. tunnel deleted?", ip_h.version);
             sleep(10);  // if tunif is deleted, will cause infinite loop here. so sleep to reduce CPU load.
@@ -246,7 +268,7 @@ void* server_read(void *arg)
 
         if(ip_h.version == 6)
         {
-            DEBUG("not supported IPv6");
+            DEBUG("not support IPv6");
             continue;
         }
 
@@ -306,8 +328,7 @@ void* server_read(void *arg)
             continue;
         }
 
-        // buf_psk = peer_table[bigger_id]->psk;
-        aes_ctx = peer_table[bigger_id]->aes_ctx;
+        aes_ctx = peer_table[bigger_id]->aes_ctx_tx;
 
         header_send.dst_id = htons(dst_id);
         header_send.src_id = htons(src_id);
@@ -354,17 +375,19 @@ void* server_read(void *arg)
             continue;
         }
 
+        header_send.seq_rand.bit.rand = random();
+
         header_send.seq_rand.u32 = htonl(header_send.seq_rand.u32);
 
         memcpy(buf_send, &header_send, HEADER_LEN);
 
         nr_aes_block = (len_load + AES_BLOCKLEN - 1) / AES_BLOCKLEN;
-        int i;
-        for(i=0; i<nr_aes_block; i++)
-        {
-            AES_ECB_encrypt(aes_ctx, buf_load+i*AES_BLOCKLEN);
-            memcpy(buf_send+HEADER_LEN+HEAD_ICV_LEN+i*AES_BLOCKLEN, buf_load+i*AES_BLOCKLEN, AES_BLOCKLEN);
-        }
+
+        // print_header(&header_send);
+        reset_aes_iv(&header_iv, &header_send);
+        AES_ctx_set_iv(aes_ctx, (uint8_t*)&header_iv);
+        AES_CBC_encrypt_buffer(aes_ctx, buf_load, nr_aes_block*AES_BLOCKLEN);
+        memcpy(buf_send+HEADER_LEN+HEAD_ICV_LEN, buf_load, nr_aes_block*AES_BLOCKLEN);
 
         bool dup = should_pkt_dup(buf_load);
         int len = HEADER_LEN + HEAD_ICV_LEN + nr_aes_block*AES_BLOCKLEN;
@@ -407,7 +430,6 @@ void* server_send(void *arg)
     tunnel_header_t header_send;
     for(int i=0; i<ETH_MTU; i++)   //set random padding data
         buf_send[i] = random();
-    // byte * buf_psk;
     struct AES_ctx * aes_ctx;
     int sockfd = 0;
     int len = 0;
@@ -433,12 +455,8 @@ void* server_send(void *arg)
 
         delete_pkt(pkt);
 
-        header_send.seq_rand.u32 = ntohl(header_send.seq_rand.u32);
-        header_send.seq_rand.bit.rand = random();
-        header_send.seq_rand.u32 = htonl(header_send.seq_rand.u32);
         bigger_id = dst_id > src_id ? dst_id : src_id;
-        // buf_psk = peer_table[bigger_id]->psk;
-        aes_ctx = peer_table[bigger_id]->aes_ctx;
+        aes_ctx = peer_table[bigger_id]->aes_ctx_tx;
 
         // from server to clients. if first_path is dynamic, dst_id is client
         if(dst_id > src_id && peer_table[dst_id]->path_array[0].dynamic &&
@@ -658,10 +676,10 @@ void* server_recv(void *arg)
     uint ttl;
     struct sockaddr_in peeraddr;
     socklen_t peeraddr_len = sizeof(peeraddr);
-    ip_dot_decimal_t ip_daddr, ip_saddr;
+    // ip_dot_decimal_t ip_daddr, ip_saddr;
     uint16_t len_load, len_recv, nr_aes_block;
-    // byte * buf_psk;
     struct AES_ctx * aes_ctx;
+    tunnel_header_t header_iv;  // use part of the header as AES IV
     byte * buf_recv = (byte *)malloc(ETH_MTU);
     byte * buf_load = (byte *)malloc(TUN_MTU_MAX);
     byte * buf_send = (byte *)malloc(ETH_MTU);
@@ -685,6 +703,9 @@ void* server_recv(void *arg)
 
         memcpy(&header_recv, buf_header, HEADER_LEN);
         memcpy(&header_send, buf_header, HEADER_LEN);
+
+        // print_header(&header_send);
+        reset_aes_iv(&header_iv, &header_send);
 
         header_recv.time_magic.u32 = ntohl(header_recv.time_magic.u32);
         if(header_recv.time_magic.bit.magic != HEADER_MAGIC)
@@ -748,8 +769,7 @@ void* server_recv(void *arg)
             }
         }
 
-        // buf_psk = peer_table[bigger_id]->psk;
-        aes_ctx = peer_table[bigger_id]->aes_ctx;
+        aes_ctx = peer_table[bigger_id]->aes_ctx_rx;
 
         memcpy(buf_icv, buf_header, AES_BLOCKLEN);
         AES_ECB_encrypt(aes_ctx, buf_icv);  //encrypt header to generate icv
@@ -830,11 +850,10 @@ void* server_recv(void *arg)
         {
             len_load = header_recv.type_len_m.bit.len;
             nr_aes_block = (len_load + AES_BLOCKLEN - 1) / AES_BLOCKLEN;
-            for(int i=0; i<nr_aes_block; i++)
-            {
-                memcpy(buf_load+i*AES_BLOCKLEN, buf_recv+HEADER_LEN+HEAD_ICV_LEN+i*AES_BLOCKLEN, AES_BLOCKLEN);
-                AES_ECB_decrypt(aes_ctx, buf_load+i*AES_BLOCKLEN);
-            }
+
+            AES_ctx_set_iv(aes_ctx, (uint8_t*)&header_iv);
+            memcpy(buf_load, buf_recv+HEADER_LEN+HEAD_ICV_LEN, nr_aes_block*AES_BLOCKLEN);
+            AES_CBC_decrypt_buffer(aes_ctx, buf_load, nr_aes_block*AES_BLOCKLEN);
 
             uint32_t daddr, saddr; // network byte order
             if(header_recv.ttl_pi_sd.bit.si == true)
@@ -866,9 +885,10 @@ void* server_recv(void *arg)
             //packet dst is not local and ttl expire, drop packet. only allow 16 hops
             if(HEAD_TTL_MIN == ttl)
             {
-                WARNING("TTL expired! from %d.%d.%d.%d to %d.%d.%d.%d.",
-                    ip_saddr.a, ip_saddr.b, ip_saddr.c, ip_saddr.d,
-                    ip_daddr.a, ip_daddr.b, ip_daddr.c, ip_daddr.d);   
+                WARNING("TTL expired!");
+                // WARNING("TTL expired! from %d.%d.%d.%d to %d.%d.%d.%d.",
+                //     ip_saddr.a, ip_saddr.b, ip_saddr.c, ip_saddr.d,
+                //     ip_daddr.a, ip_daddr.b, ip_daddr.c, ip_daddr.d);
                 continue;
             }
 
@@ -891,11 +911,11 @@ void* server_recv(void *arg)
 
             // decrypt the IP header to check if it should be duplicated.
             nr_aes_block = (IP_LEN + AES_BLOCKLEN - 1) / AES_BLOCKLEN;
-            for(int i=0; i<nr_aes_block; i++)
-            {
-                memcpy(buf_load+i*AES_BLOCKLEN, buf_recv+HEADER_LEN+HEAD_ICV_LEN+i*AES_BLOCKLEN, AES_BLOCKLEN);
-                AES_ECB_decrypt(aes_ctx, buf_load+i*AES_BLOCKLEN);
-            }
+
+            AES_ctx_set_iv(aes_ctx, (uint8_t*)&header_iv);
+            memcpy(buf_load, buf_recv+HEADER_LEN+HEAD_ICV_LEN, nr_aes_block*AES_BLOCKLEN);
+            AES_CBC_decrypt_buffer(aes_ctx, buf_load, nr_aes_block*AES_BLOCKLEN);
+
             bool dup = should_pkt_dup(buf_load);
 
             packet_profile_t * pkt = new_pkt();
@@ -921,5 +941,4 @@ void* server_recv(void *arg)
     pthread_cleanup_pop(0);
     return NULL;
 }
-
 

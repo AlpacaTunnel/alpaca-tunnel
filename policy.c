@@ -11,7 +11,7 @@
 
 
 /*
- * duplicate TCP-SYN and DNS packets, because they're more import.
+ * duplicate TCP-SYN and DNS packets, because they're more important.
 */
 bool should_pkt_dup(byte* ip_load)
 {

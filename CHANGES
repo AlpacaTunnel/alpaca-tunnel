@@ -7,6 +7,11 @@ Todo list:
 6. IPv6
 
 
+6.1 2020-03-07
+- change AES mode from ECB to CBC
+- fix CPU 100% when tunif deleted
+
+
 6.0 2020-03-07
 - replace AES lib with https://github.com/kokke/tiny-AES-c
 

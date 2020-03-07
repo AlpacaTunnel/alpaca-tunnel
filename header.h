@@ -13,7 +13,7 @@
 #define HEAD_MAX_ID 65535
 #define HEAD_ID_MAX_LEN 7  // max text len, 254.254
 
-#define HEADER_LEN 16
+#define HEADER_LEN 16  // must be the same as AES_BLOCKLEN
 #define HEAD_ICV_LEN 16
 #define HEAD_MORE_FALSE 0
 #define HEAD_MORE_TRUE  1

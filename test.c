@@ -156,8 +156,8 @@ void *queue_thread2(void *arg)
     int rc, p;
 
     queue_decrease(q, 2);
-    rc = queue_look_first(q, (void **)&c, &p);
-    printf("2 look: %s, %d\n", c, p);
+    rc = queue_peek(q, (void **)&c, &p);
+    printf("2 peek: %s, %d\n", c, p);
 
     while(true)
     {
