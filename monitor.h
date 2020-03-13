@@ -21,10 +21,10 @@
 typedef struct
 {
     int type;
-    uint event_cnt;
+    uint32_t event_cnt;
     pthread_t monitor_td;
     pthread_t trigger_td;
-    uint trigger_interval;
+    uint32_t trigger_interval;
     void (*trigger)(void *);
     void * trigger_arg;
     char file_dir[MONITOR_PATH_MAX_LEN];
@@ -34,14 +34,14 @@ typedef struct
 
 
 // call trigger() every trigger_interval seconds, just like crontab
-monitor_t * cronjob_start(uint trigger_interval, void (*trigger)(void *), void * trigger_arg);
+monitor_t * cronjob_start(uint32_t trigger_interval, void (*trigger)(void *), void * trigger_arg);
 int cronjob_stop(monitor_t * monitor);
 
 // trigger_interval: 0 instantly, else check if trigger every $interval seconds
-monitor_t * monitor_file_start(const char * file_path, uint trigger_interval, void (*trigger)(void *), void * trigger_arg);
+monitor_t * monitor_file_start(const char * file_path, uint32_t trigger_interval, void (*trigger)(void *), void * trigger_arg);
 int monitor_file_stop(monitor_t * monitor);
 
-monitor_t * monitor_route_start(int family, uint trigger_interval, void (*trigger)(void *), void * trigger_arg);
+monitor_t * monitor_route_start(int family, uint32_t trigger_interval, void (*trigger)(void *), void * trigger_arg);
 int monitor_route_stop(monitor_t * monitor);
 
 

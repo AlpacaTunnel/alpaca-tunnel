@@ -13,3 +13,11 @@ typedef unsigned char byte;
 
 #endif
 
+
+#ifndef UINT_T_
+#define UINT_T_
+
+typedef unsigned int uint;
+
+#endif
+

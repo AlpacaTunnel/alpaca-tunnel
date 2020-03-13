@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "my-string.h"
@@ -19,8 +20,8 @@ void *aligned_malloc(size_t size)
     if(size <= 0)
         return NULL;
 
-    uint blocks = size / ALIGNED_BYTE;
-    uint fragment = size % ALIGNED_BYTE;
+    uint32_t blocks = size / ALIGNED_BYTE;
+    uint32_t fragment = size % ALIGNED_BYTE;
     if( (fragment+MALLOC_MHEAD) > ALIGNED_BYTE )
         blocks += 2;
     else

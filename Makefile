@@ -1,11 +1,11 @@
 all:
-	gcc -std=gnu11 main.c aes.c log.c peer.c ip.c vpn.c monitor.c signal.c policy.c tunif.c cmd.c route.c config.c data-struct/*.c -lpthread -lm -o alpaca-tunnel -Wall -O3
+	gcc -std=gnu11 main.c aes.c log.c peer.c ip.c vpn.c monitor.c signal.c header.c policy.c tunif.c cmd.c route.c config.c data-struct/*.c -lpthread -lm -o alpaca-tunnel -Wall -O3
 
 debug:
-	gcc -std=gnu11 main.c aes.c log.c peer.c ip.c vpn.c monitor.c signal.c policy.c tunif.c cmd.c route.c config.c data-struct/*.c -lpthread -lm -o alpaca-tunnel -Wall -g
+	gcc -std=gnu11 main.c aes.c log.c peer.c ip.c vpn.c monitor.c signal.c header.c policy.c tunif.c cmd.c route.c config.c data-struct/*.c -lpthread -lm -o alpaca-tunnel -Wall -g
 
 test:
-	gcc -std=gnu11 test.c aes.c log.c peer.c ip.c vpn.c monitor.c signal.c policy.c tunif.c cmd.c route.c config.c data-struct/*.c -lpthread -lm -o alpaca-tunnel -Wall -g
+	gcc -std=gnu11 test.c aes.c log.c peer.c ip.c vpn.c monitor.c signal.c header.c policy.c tunif.c cmd.c route.c config.c data-struct/*.c -lpthread -lm -o alpaca-tunnel -Wall -g
 
 clean:
 	rm -f alpaca-tunnel

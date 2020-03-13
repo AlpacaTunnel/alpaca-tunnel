@@ -6,6 +6,8 @@
 #ifndef HEADER_H_
 #define HEADER_H_
 
+// #include <stdint.h>
+#include <arpa/inet.h>
 #include "data-struct/data-struct.h"
 
 
@@ -51,9 +53,9 @@
 
 struct type_len_m_s
 {
-    uint type  : 4;
-    uint len   : 11;
-    uint more  : 1;     // more heaer after
+    uint8_t     type  : 4;
+    uint16_t    len   : 11;
+    uint8_t     more  : 1;     // more heaer after
 } __attribute__((packed));
 
 union type_len_m_u
@@ -65,13 +67,13 @@ union type_len_m_u
 /*
 struct uint4_t
 {
-    uint value : 4;
+    uint8_t value : 4;
 } __attribute__((packed));
 
 struct pi_s
 {
-    uint a : 2;
-    uint b : 2;
+    uint8_t a : 2;
+    uint8_t b : 2;
 } __attribute__((packed));
 
 union pi_u
@@ -83,12 +85,12 @@ union pi_u
 
 struct ttl_pi_sd_s
 {
-    uint        ttl        : 4;
-    uint        pi_a       : 2;    // path index set by sender(origin)
-    uint        pi_b       : 2;    // path index set by forwarder
+    uint8_t     ttl        : 4;
+    uint8_t     pi_a       : 2;    // path index set by sender(origin)
+    uint8_t     pi_b       : 2;    // path index set by forwarder
     bool        si         : 1;    // source inside flag
     bool        di         : 1;    // dest inside flag
-    uint        reserved   : 6;
+    uint8_t     reserved   : 6;
 } __attribute__((packed));
 
 union ttl_pi_sd_u
@@ -101,7 +103,7 @@ union ttl_pi_sd_u
 struct time_magic_s
 {
     uint32_t time   : 20;
-    uint     magic  : 12;   // magic number, if not match, group may be wrong
+    uint16_t magic  : 12;   // magic number, if not match, group may be wrong
 } __attribute__((packed));
 
 union time_magic_u
@@ -114,7 +116,7 @@ union time_magic_u
 struct seq_rand_s
 {
     uint32_t seq   : 20;
-    uint     rand  : 12;
+    uint16_t rand  : 12;
 } __attribute__((packed));
 
 union seq_rand_u
@@ -139,6 +141,12 @@ struct tunnel_header_s
 } __attribute__((packed));
 
 typedef struct tunnel_header_s tunnel_header_t;
+
+// convert byte order from host to network
+void header_hton(tunnel_header_t * header);
+
+// convert byte order from network to host
+void header_ntoh(tunnel_header_t * header);
 
 
 #endif

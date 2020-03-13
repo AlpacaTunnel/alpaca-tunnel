@@ -128,7 +128,7 @@ int vpn_context_destory(vpn_context_t * vpn_ctx)
 /* get gw_id form route_table or system route table
  * return 0 if not found. actually, will never return 0.
 */
-uint16_t get_dst_id(forwarding_table_t * forwarding_table, uint32_t ip_dst, uint32_t ip_src, if_info_t * if_list, uint32_t local_addr, uint local_mask)
+uint16_t get_dst_id(forwarding_table_t * forwarding_table, uint32_t ip_dst, uint32_t ip_src, if_info_t * if_list, uint32_t local_addr, uint32_t local_mask)
 {
     // ip_dst is in tunif's subnet
     if((ip_dst & local_mask) == (local_addr & local_mask))
@@ -210,17 +210,6 @@ void* pkt_delay_dup(void *arg)
     return NULL;
 }
 
-/*
-void print_header(tunnel_header_t *header)
-{
-    printf("type_len_m: %d\n", header->type_len_m);
-    printf("ttl_pi_sd: %d\n", header->ttl_pi_sd);
-    printf("src_id: %d\n", header->src_id);
-    printf("dst_id: %d\n", header->dst_id);
-    printf("time_magic: %d\n", header->time_magic);
-    printf("seq_rand: %d\n", header->seq_rand);
-}
-*/
 
 void reset_aes_iv(tunnel_header_t * iv, const tunnel_header_t * header)
 {
@@ -330,23 +319,20 @@ void* server_read(void *arg)
 
         aes_ctx = peer_table[bigger_id]->aes_ctx_tx;
 
-        header_send.dst_id = htons(dst_id);
-        header_send.src_id = htons(src_id);
+        header_send.dst_id = dst_id;
+        header_send.src_id = src_id;
 
         header_send.type_len_m.bit.type = HEAD_TYPE_DATA;
         header_send.type_len_m.bit.len = len_load;
         header_send.type_len_m.bit.more = HEAD_MORE_FALSE;
-        header_send.type_len_m.u16 = htons(header_send.type_len_m.u16);
 
         header_send.ttl_pi_sd.bit.pi_a = 0;
         header_send.ttl_pi_sd.bit.pi_b = 0;
         header_send.ttl_pi_sd.bit.ttl = HEAD_TTL_MAX;
-        header_send.ttl_pi_sd.u16 = htons(header_send.ttl_pi_sd.u16);
 
         uint32_t now = time(NULL);
         header_send.time_magic.bit.time = now;
         header_send.time_magic.bit.magic = HEADER_MAGIC;
-        header_send.time_magic.u32 = htonl(header_send.time_magic.u32);
 
         if(pthread_mutex_lock(vpn_ctx->time_seq_lock) != 0)
         {
@@ -377,7 +363,7 @@ void* server_read(void *arg)
 
         header_send.seq_rand.bit.rand = random();
 
-        header_send.seq_rand.u32 = htonl(header_send.seq_rand.u32);
+        header_hton(&header_send);
 
         memcpy(buf_send, &header_send, HEADER_LEN);
 
@@ -582,8 +568,8 @@ void* server_send(void *arg)
                     continue;
 
                 // at the very beginning, both last_time are 0
-                uint path_last_time = peer_table[dst_id]->path_array[pi].last_time;
-                uint peer_last_time = peer_table[dst_id]->last_time;
+                uint32_t path_last_time = peer_table[dst_id]->path_array[pi].last_time;
+                uint32_t peer_last_time = peer_table[dst_id]->last_time;
                 if(abs(peer_last_time - path_last_time) > PATH_LIFE_TIME)
                 {
                     if(peer_table[dst_id]->path_array[pi].dynamic)
@@ -673,7 +659,7 @@ void* server_recv(void *arg)
     vpn_context_t * vpn_ctx = (vpn_context_t *)arg;
     peer_profile_t ** peer_table = vpn_ctx->peer_table;
     uint16_t dst_id = 0, src_id = 0, bigger_id = 0;
-    uint ttl;
+    uint8_t ttl;
     struct sockaddr_in peeraddr;
     socklen_t peeraddr_len = sizeof(peeraddr);
     // ip_dot_decimal_t ip_daddr, ip_saddr;
@@ -704,21 +690,21 @@ void* server_recv(void *arg)
         memcpy(&header_recv, buf_header, HEADER_LEN);
         memcpy(&header_send, buf_header, HEADER_LEN);
 
+        header_ntoh(&header_recv);
+
         // print_header(&header_send);
         reset_aes_iv(&header_iv, &header_send);
 
-        header_recv.time_magic.u32 = ntohl(header_recv.time_magic.u32);
         if(header_recv.time_magic.bit.magic != HEADER_MAGIC)
         {
             DEBUG("tunif %s received packet: group not match!", vpn_ctx->tunif.name);
             continue;
         }
 
-        header_recv.ttl_pi_sd.u16 = ntohs(header_recv.ttl_pi_sd.u16);
-        uint pi = (header_recv.ttl_pi_sd.bit.pi_a << 2) + header_recv.ttl_pi_sd.bit.pi_b;
-        
-        dst_id = ntohs(header_recv.dst_id);
-        src_id = ntohs(header_recv.src_id);
+        uint8_t pi = (header_recv.ttl_pi_sd.bit.pi_a << 2) + header_recv.ttl_pi_sd.bit.pi_b;
+
+        dst_id = header_recv.dst_id;
+        src_id = header_recv.src_id;
         bigger_id = dst_id > src_id ? dst_id : src_id;
 
         if(peer_table[src_id] == NULL || peer_table[src_id]->valid == false)
@@ -781,8 +767,6 @@ void* server_recv(void *arg)
             continue;
         }
 
-        header_recv.type_len_m.u16 = ntohs(header_recv.type_len_m.u16);
-
         int type = header_recv.type_len_m.bit.type;
         if(type != HEAD_TYPE_DATA)
         {
@@ -790,7 +774,6 @@ void* server_recv(void *arg)
             continue;
         }
 
-        header_recv.seq_rand.u32 = ntohl(header_recv.seq_rand.u32);
         uint32_t pkt_time = header_recv.time_magic.bit.time;
         uint32_t pkt_seq = header_recv.seq_rand.bit.seq;
 

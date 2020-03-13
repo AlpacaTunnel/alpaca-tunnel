@@ -7,6 +7,11 @@ Todo list:
 6. IPv6
 
 
+6.1.1 2020-03-13
+- variable/keyword rename
+- refactor on header endian convert
+
+
 6.1 2020-03-07
 - change AES mode from ECB to CBC
 - fix CPU 100% when tunif deleted

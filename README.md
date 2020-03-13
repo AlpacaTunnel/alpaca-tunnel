@@ -87,3 +87,8 @@ Bugs and Issues
 
 2. When forwarders set on a server, two clients may not be able to reach each other via the server. If you want to use P2P, don't specify forwarders on the server.
 
+
+Security Warnings
+-----------------
+
+This software is not designed by an security expert, and not designed for strong security. It uses static pre-shared-keys, so there is no perfect forward secrecy, and it's vulnerable to replay attack. Don't rely on it.

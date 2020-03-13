@@ -42,7 +42,7 @@ void* monitor_trigger_thread(void *arg)
 }
 
 
-monitor_t * cronjob_start(uint trigger_interval, void (*trigger)(void *), void * trigger_arg)
+monitor_t * cronjob_start(uint32_t trigger_interval, void (*trigger)(void *), void * trigger_arg)
 {
     if(trigger_interval < 1)
     {
@@ -100,7 +100,7 @@ void* cronjob_thread(void *arg)
 }
 
 
-monitor_t * monitor_file_start(const char * file_path, uint trigger_interval, void (*trigger)(void *), void * trigger_arg)
+monitor_t * monitor_file_start(const char * file_path, uint32_t trigger_interval, void (*trigger)(void *), void * trigger_arg)
 {
     monitor_t * monitor = (monitor_t *)malloc(sizeof(monitor_t));
     if(monitor == NULL)
@@ -232,7 +232,7 @@ void* monitor_file_thread(void *arg)
 }
 
 
-monitor_t * monitor_route_start(int family, uint trigger_interval, void (*trigger)(void *), void * trigger_arg)
+monitor_t * monitor_route_start(int family, uint32_t trigger_interval, void (*trigger)(void *), void * trigger_arg)
 {
     monitor_t * monitor = (monitor_t *)malloc(sizeof(monitor_t));
     if(monitor == NULL)

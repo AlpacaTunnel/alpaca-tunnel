@@ -48,7 +48,7 @@ int queue_put(queue_t * queue, void * data, int priority);
 
 int queue_get(queue_t * queue, void ** data, int * priority);
 
-int queue_look_first(queue_t * queue, void ** data, int * priority);  // take a look at the first node, but don't get anything.
+int queue_peek(queue_t * queue, void ** data, int * priority);  // take a peek at the first node, but don't get anything.
 
 int queue_decrease(queue_t * queue, int p);  // decrease the priority of all nodes by p, better to call before queue_get()
 

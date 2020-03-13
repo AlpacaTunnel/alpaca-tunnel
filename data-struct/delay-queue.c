@@ -133,7 +133,7 @@ void * delay_queue_get(delay_queue_t * dq)
 
     while(true)
     {
-        if(queue_look_first(dq->queue, (void **)&node, NULL) == 0)
+        if(queue_peek(dq->queue, (void **)&node, NULL) == 0)
             if(timer_elapsed(&node->ms_timer))
                 break;
 

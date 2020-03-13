@@ -219,7 +219,7 @@ int queue_get(queue_t * queue, void ** data, int * priority)
 }
 
 
-int queue_look_first(queue_t * queue, void ** data, int * priority)
+int queue_peek(queue_t * queue, void ** data, int * priority)
 {
     if(queue == NULL)
         return -1;
