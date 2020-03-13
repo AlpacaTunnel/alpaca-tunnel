@@ -53,9 +53,9 @@
 
 struct type_len_m_s
 {
-    uint8_t     type  : 4;
-    uint16_t    len   : 11;
     uint8_t     more  : 1;     // more heaer after
+    uint16_t    len   : 11;
+    uint8_t     type  : 4;
 } __attribute__((packed));
 
 union type_len_m_u
@@ -72,8 +72,8 @@ struct uint4_t
 
 struct pi_s
 {
-    uint8_t a : 2;
     uint8_t b : 2;
+    uint8_t a : 2;
 } __attribute__((packed));
 
 union pi_u
@@ -85,12 +85,12 @@ union pi_u
 
 struct ttl_pi_sd_s
 {
-    uint8_t     ttl        : 4;
-    uint8_t     pi_a       : 2;    // path index set by sender(origin)
-    uint8_t     pi_b       : 2;    // path index set by forwarder
-    bool        si         : 1;    // source inside flag
-    bool        di         : 1;    // dest inside flag
     uint8_t     reserved   : 6;
+    bool        di         : 1;    // dest inside flag
+    bool        si         : 1;    // source inside flag
+    uint8_t     pi_b       : 2;    // path index set by forwarder
+    uint8_t     pi_a       : 2;    // path index set by sender(origin)
+    uint8_t     ttl        : 4;
 } __attribute__((packed));
 
 union ttl_pi_sd_u
@@ -102,8 +102,8 @@ union ttl_pi_sd_u
 
 struct time_magic_s
 {
-    uint32_t time   : 20;
     uint16_t magic  : 12;   // magic number, if not match, group may be wrong
+    uint32_t time   : 20;
 } __attribute__((packed));
 
 union time_magic_u
@@ -115,8 +115,8 @@ union time_magic_u
 
 struct seq_rand_s
 {
-    uint32_t seq   : 20;
     uint16_t rand  : 12;
+    uint32_t seq   : 20;
 } __attribute__((packed));
 
 union seq_rand_u
